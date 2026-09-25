@@ -51,7 +51,20 @@
           : { enabled: false, period: "all", tiers: [{ id: "tier_base", name: "一般會員", minSpend: 0, percent: 100, freeShip: false }] };
       });
     }
-    s.version = 5;
+    // v5 → v6：進銷存（供應商、進貨單、庫存異動、規格成本）
+    if ((s.version || 1) < 6) {
+      const demo = window.makeSeed().stores.demo;
+      const demoCost = {};
+      demo.products.forEach(p => p.variants.forEach(v => { demoCost[v.id] = v.cost; }));
+      Object.values(s.stores).forEach(store => {
+        store.products.forEach(p => p.variants.forEach(v => { if (v.cost === undefined) v.cost = store.id === "demo" ? (demoCost[v.id] || 0) : 0; }));
+        if (!store.suppliers) store.suppliers = store.id === "demo" ? demo.suppliers : [];
+        if (!store.purchases) store.purchases = []; // 舊資料不補範例進貨單，避免和現有庫存對不上
+        if (!store.movements) store.movements = [];
+        if (!store.counters.purchase) store.counters.purchase = 0;
+      });
+    }
+    s.version = 6;
     return s;
   }
 
@@ -176,7 +189,12 @@
       const data = clone(input);
       data.name = data.name.trim();
       data.images = (data.images || []).map(im => ({ id: im.id, url: im.url, width: im.width, height: im.height }));
+      data.variants.forEach(v => { v.stock = Math.floor(v.stock); v.cost = Math.max(0, Math.round(+v.cost || 0)); });
       const before = JSON.stringify(S().products);
+      const movesBefore = S().movements.length;
+      const old = data.id ? S().products.find(x => x.id === data.id) : null;
+      const oldStock = {};
+      if (old) old.variants.forEach(v => { oldStock[v.id] = v.stock; });
       if (!data.id) {
         data.id = uid("p");
         data.createdAt = new Date().toISOString();
@@ -186,8 +204,15 @@
         const i = S().products.findIndex(x => x.id === data.id);
         S().products[i] = Object.assign({}, S().products[i], data);
       }
+      // 在商品頁直接改庫存，也要留下異動紀錄
+      const saved = S().products.find(x => x.id === data.id);
+      saved.variants.forEach(v => {
+        const was = oldStock[v.id] !== undefined ? oldStock[v.id] : 0;
+        if (v.stock !== was) logMove(saved, v, v.stock - was, oldStock[v.id] === undefined ? "initial" : "edit", "", oldStock[v.id] === undefined ? "新增規格的期初庫存" : "在商品頁直接修改庫存");
+      });
       if (!writeStorage()) {
         S().products = JSON.parse(before); // 還原，避免畫面和儲存的資料不一致
+        S().movements.length = movesBefore;
         throw new Error("瀏覽器儲存空間已滿，請刪掉一些商品圖片再儲存");
       }
       notify(); return clone(data);
@@ -209,6 +234,220 @@
     },
     newVariantId: () => uid("v"),
   };
+  /* ---------- 進銷存：庫存異動紀錄 ----------
+   * 每一次庫存變動都記一筆：誰（哪個規格）、變多少、變完剩多少、為什麼、哪張單。
+   * type：sale 銷售出貨扣庫存｜cancel 訂單取消加回｜purchase 進貨入庫｜
+   *       adjust 盤點／手動調整｜edit 在商品頁直接改｜initial 新規格期初庫存
+   * 呼叫前要先改好 v.stock，after 記的是改完的數字。
+   */
+  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存" };
+  function logMove(p, v, delta, type, ref, note) {
+    S().movements.push({
+      id: uid("mv"), at: new Date().toISOString(), productId: p.id, variantId: v.id,
+      name: p.name, optionText: Object.values(v.options).join(" / "), sku: v.sku,
+      delta, after: v.stock, type, ref: ref || "", note: note || "",
+    });
+  }
+  const findVariant = variantId => {
+    for (const p of S().products) { const v = p.variants.find(x => x.id === variantId); if (v) return { p, v }; }
+    return null;
+  };
+  // 已下單、還沒入庫完的數量（在途）
+  function incomingOf(variantId) {
+    return S().purchases.filter(po => po.status === "ordered" || po.status === "partial")
+      .reduce((s, po) => s + po.items.filter(it => it.variantId === variantId).reduce((a, it) => a + (it.qty - it.received), 0), 0);
+  }
+
+  const inventory = {
+    MOVE_TYPES,
+    ADJUST_REASONS: ["盤點差異", "損壞報廢", "樣品／贈品", "找回", "其他"],
+    /* 所有規格的庫存列表；filter：low 低庫存、out 缺貨 */
+    list({ q = "", filter = "" } = {}) {
+      q = q.trim().toLowerCase();
+      const limit = S().settings.lowStockAlert;
+      const rows = [];
+      S().products.forEach(p => p.variants.forEach(v => {
+        rows.push({
+          productId: p.id, variantId: v.id, name: p.name, color: p.color, image: products.cover(p), status: p.status,
+          optionText: Object.values(v.options).join(" / "), sku: v.sku, price: v.price,
+          stock: v.stock, cost: v.cost || 0, value: v.stock * (v.cost || 0), incoming: incomingOf(v.id),
+          low: v.stock <= limit,
+        });
+      }));
+      return rows.filter(r =>
+        (!q || r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q) || r.optionText.toLowerCase().includes(q)) &&
+        (filter !== "low" || r.low) && (filter !== "out" || r.stock === 0)
+      ).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant") || a.sku.localeCompare(b.sku));
+    },
+    summary() {
+      const rows = inventory.list();
+      return {
+        skus: rows.length,
+        units: rows.reduce((s, r) => s + r.stock, 0),
+        value: rows.reduce((s, r) => s + r.value, 0),
+        low: rows.filter(r => r.low && r.status === "active").length,
+        incoming: rows.reduce((s, r) => s + r.incoming, 0),
+      };
+    },
+    /* 盤點／手動調整：mode "set" 直接設成盤點後的數量，"delta" 增減 */
+    adjust(variantId, { mode, qty, reason, note }) {
+      const hit = findVariant(variantId);
+      if (!hit) throw new Error("找不到這個規格");
+      qty = Math.floor(+qty);
+      if (!Number.isFinite(qty)) throw new Error("請填數量");
+      const target = mode === "set" ? qty : hit.v.stock + qty;
+      if (target < 0) throw new Error(`調整後庫存不能小於 0（目前 ${hit.v.stock}）`);
+      const delta = target - hit.v.stock;
+      if (delta === 0) throw new Error("數量沒有變化");
+      if (!reason) throw new Error("請選擇調整原因");
+      hit.v.stock = target;
+      logMove(hit.p, hit.v, delta, "adjust", "", [reason, String(note || "").trim()].filter(Boolean).join("：") + (mode === "set" ? `（盤點實際數量 ${target}）` : ""));
+      commit();
+      return { stock: target, delta };
+    },
+    /* 異動紀錄：新的在前 */
+    movements({ q = "", type = "", variantId = "", limit = 500 } = {}) {
+      q = q.trim().toLowerCase();
+      return clone(S().movements.filter(m =>
+        (!type || m.type === type) && (!variantId || m.variantId === variantId) &&
+        (!q || m.name.toLowerCase().includes(q) || m.sku.toLowerCase().includes(q) || m.ref.toLowerCase().includes(q))
+      ).slice(-limit).reverse());
+    },
+  };
+
+  /* ---------- 進銷存：供應商 ---------- */
+  const suppliers = {
+    list() {
+      return clone(S().suppliers).map(s => {
+        const pos = S().purchases.filter(po => po.supplierId === s.id && po.status !== "cancelled");
+        return Object.assign(s, { poCount: pos.length, lastAt: pos.map(po => po.createdAt).sort().pop() || "" });
+      }).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+    },
+    get: id => { const s = S().suppliers.find(x => x.id === id); return s ? clone(s) : null; },
+    save(input) {
+      const d = clone(input);
+      ["name", "contact", "phone", "email", "taxId", "address", "note"].forEach(k => { d[k] = String(d[k] || "").trim(); });
+      if (!d.name) throw new Error("請填寫供應商名稱");
+      if (d.taxId && !/^\d{8}$/.test(d.taxId)) throw new Error("統一編號是 8 位數字");
+      if (d.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) throw new Error("Email 格式不正確");
+      if (S().suppliers.some(s => s.name === d.name && s.id !== d.id)) throw new Error("已經有同名的供應商");
+      if (!d.id) { Object.assign(d, { id: uid("sp"), createdAt: new Date().toISOString() }); S().suppliers.push(d); }
+      else { const i = S().suppliers.findIndex(x => x.id === d.id); S().suppliers[i] = Object.assign({}, S().suppliers[i], d); }
+      commit(); return clone(d);
+    },
+    remove(id) {
+      if (S().purchases.some(po => po.supplierId === id && (po.status === "ordered" || po.status === "partial"))) throw new Error("這個供應商還有未入庫的進貨單，先處理完再刪除");
+      S().suppliers = S().suppliers.filter(s => s.id !== id); commit();
+    },
+  };
+
+  /* ---------- 進銷存：進貨單 ----------
+   * 流程：草稿 draft → 已下單 ordered → 部分入庫 partial → 已入庫 received；可取消 cancelled
+   * 入庫時：加庫存、寫異動紀錄、用「移動平均」更新規格成本
+   *   新平均成本 =（原庫存 × 原平均成本 ＋ 入庫數量 × 這次進價）÷（原庫存 ＋ 入庫數量）
+   */
+  const PO_STATUS = { draft: "草稿", ordered: "已下單", partial: "部分入庫", received: "已入庫", cancelled: "已取消" };
+  const poTotal = po => po.items.reduce((s, it) => s + it.qty * it.cost, 0);
+  const purchases = {
+    STATUS: PO_STATUS,
+    list({ status = "", q = "" } = {}) {
+      q = q.trim().toLowerCase();
+      return clone(S().purchases.filter(po =>
+        (!status || po.status === status) &&
+        (!q || po.number.toLowerCase().includes(q) || po.supplierName.toLowerCase().includes(q) || po.items.some(it => it.name.toLowerCase().includes(q) || it.sku.toLowerCase().includes(q)))
+      ).sort((a, b) => b.createdAt.localeCompare(a.createdAt))).map(po => Object.assign(po, { total: poTotal(po) }));
+    },
+    get: id => { const po = S().purchases.find(x => x.id === id); return po ? Object.assign(clone(po), { total: poTotal(po) }) : null; },
+    countByStatus() {
+      const out = { all: S().purchases.length };
+      Object.keys(PO_STATUS).forEach(k => { out[k] = S().purchases.filter(po => po.status === k).length; });
+      return out;
+    },
+    /* 建立或修改草稿 */
+    save(input) {
+      const d = clone(input);
+      const existing = d.id ? S().purchases.find(x => x.id === d.id) : null;
+      if (existing && existing.status !== "draft") throw new Error("已下單的進貨單不能再修改品項");
+      const sp = S().suppliers.find(s => s.id === d.supplierId);
+      if (!sp) throw new Error("請選擇供應商");
+      const items = (d.items || []).map(it => {
+        const hit = findVariant(it.variantId);
+        if (!hit) throw new Error("有品項找不到對應的商品規格");
+        const qty = Math.floor(+it.qty || 0), cost = Math.round(+it.cost || 0);
+        if (qty <= 0) throw new Error(`「${hit.p.name}」數量要大於 0`);
+        if (cost < 0) throw new Error(`「${hit.p.name}」進價不能是負數`);
+        return { productId: hit.p.id, variantId: hit.v.id, name: hit.p.name, optionText: Object.values(hit.v.options).join(" / "), sku: hit.v.sku, qty, cost, received: 0 };
+      });
+      if (!items.length) throw new Error("至少要有一個品項");
+      if (new Set(items.map(it => it.variantId)).size !== items.length) throw new Error("同一個規格不要重複列，請合併數量");
+      const now = new Date().toISOString();
+      const base = { supplierId: sp.id, supplierName: sp.name, expectedAt: d.expectedAt || "", note: String(d.note || "").trim(), items };
+      let po;
+      if (existing) { Object.assign(existing, base); po = existing; }
+      else {
+        S().counters.purchase = (S().counters.purchase || 0) + 1;
+        po = Object.assign({ id: uid("po"), number: "PO" + String(240000 + S().counters.purchase), status: "draft", createdAt: now, history: [{ status: "draft", at: now }] }, base);
+        S().purchases.push(po);
+      }
+      commit(); return purchases.get(po.id);
+    },
+    /* 草稿 → 已下單 */
+    place(id) {
+      const po = S().purchases.find(x => x.id === id);
+      if (!po || po.status !== "draft") throw new Error("只有草稿可以送出");
+      po.status = "ordered"; po.orderedAt = new Date().toISOString();
+      po.history.push({ status: "ordered", at: po.orderedAt });
+      commit();
+    },
+    /* 入庫：qtys = { variantId: 這次收到的數量 } */
+    receive(id, qtys, note) {
+      const po = S().purchases.find(x => x.id === id);
+      if (!po || !(po.status === "ordered" || po.status === "partial")) throw new Error("這張進貨單現在不能入庫");
+      const lines = po.items.map(it => ({ it, n: Math.floor(+(qtys || {})[it.variantId] || 0) })).filter(x => x.n !== 0);
+      if (!lines.length) throw new Error("請填這次收到的數量");
+      for (const { it, n } of lines) {
+        if (n < 0) throw new Error(`「${it.name}」數量不能是負數`);
+        if (n > it.qty - it.received) throw new Error(`「${it.name}${it.optionText ? "／" + it.optionText : ""}」最多還能收 ${it.qty - it.received}`);
+        if (!findVariant(it.variantId)) throw new Error(`「${it.name}」的商品規格已被刪除，無法入庫`);
+      }
+      for (const { it, n } of lines) {
+        const { p, v } = findVariant(it.variantId);
+        const oldQty = Math.max(0, v.stock), oldCost = v.cost || 0;
+        v.cost = oldQty + n > 0 ? Math.round((oldQty * oldCost + n * it.cost) / (oldQty + n)) : it.cost;
+        v.stock += n;
+        it.received += n;
+        logMove(p, v, n, "purchase", po.number, `${po.supplierName}，進價 ${money0(it.cost)}`);
+      }
+      const done = po.items.every(it => it.received >= it.qty);
+      po.status = done ? "received" : "partial";
+      const at = new Date().toISOString();
+      if (done) po.receivedAt = at;
+      po.history.push({ status: po.status, at, note: lines.map(({ it, n }) => `${it.name}${it.optionText ? "／" + it.optionText : ""} ×${n}`).join("、") + (note ? `（${note}）` : "") });
+      commit();
+    },
+    /* 取消：草稿、已下單可以取消；部分入庫則是「剩下的不收了」，已收的保留 */
+    cancel(id, note) {
+      const po = S().purchases.find(x => x.id === id);
+      if (!po || !["draft", "ordered", "partial"].includes(po.status)) throw new Error("這張進貨單不能取消");
+      const at = new Date().toISOString();
+      if (po.status === "partial") {
+        po.items.forEach(it => { it.qty = it.received; });
+        po.items = po.items.filter(it => it.received > 0); // 完全沒收到的品項從單子移除
+        po.status = "received"; po.receivedAt = at;
+        po.history.push({ status: "received", at, note: "剩下的數量不再進貨" + (note ? `（${note}）` : "") });
+      } else {
+        po.status = "cancelled";
+        po.history.push({ status: "cancelled", at, note: note || "" });
+      }
+      commit();
+    },
+    remove(id) {
+      const po = S().purchases.find(x => x.id === id);
+      if (!po || po.status !== "draft") throw new Error("只有草稿可以刪除");
+      S().purchases = S().purchases.filter(x => x.id !== id); commit();
+    },
+  };
+
   function pickColor() {
     const pal = ["#8a9a8e", "#b7a38b", "#6d7b86", "#a58a6f", "#4f6b66", "#7a5a43", "#8c7f99"];
     return pal[Math.floor(Math.random() * pal.length)];
@@ -662,7 +901,9 @@
       if (q.couponError) throw new Error(`優惠碼 ${couponCode}：${q.couponError}（可以先移除優惠碼再結帳）`);
       // 扣庫存
       for (const l of lines) {
-        S().products.find(p => p.id === l.productId).variants.find(x => x.id === l.variantId).stock -= l.qty;
+        const p = S().products.find(x => x.id === l.productId), v = p.variants.find(x => x.id === l.variantId);
+        v.stock -= l.qty;
+        logMove(p, v, -l.qty, "sale", "SO" + String(240000 + S().counters.order + 1), "");
       }
       // 已登入就掛在自己的帳號下；沒登入就用手機找（或建立）會員
       const c = me() || customers.upsert(contact);
@@ -675,7 +916,8 @@
         contact: { name: contact.name, phone: contact.phone, email: contact.email || "" },
         items: lines.map(l => {
           const v = S().products.find(p => p.id === l.productId).variants.find(x => x.id === l.variantId);
-          return { productId: l.productId, variantId: l.variantId, name: l.name, optionText: l.optionText, sku: v.sku, price: l.price, qty: l.qty };
+          // cost：下單當下的平均成本，之後算毛利用
+          return { productId: l.productId, variantId: l.variantId, name: l.name, optionText: l.optionText, sku: v.sku, price: l.price, qty: l.qty, cost: v.cost || 0 };
         }),
         subtotal: q.subtotal, shippingFee: q.shippingFee, discount: q.discount, total: q.total,
         discounts: q.discounts, couponCode: q.coupon ? q.coupon.code : "",
@@ -705,7 +947,7 @@
         o.items.forEach(it => {
           const p = S().products.find(x => x.id === it.productId);
           const v = p && p.variants.find(x => x.id === it.variantId);
-          if (v) v.stock += it.qty;
+          if (v) { v.stock += it.qty; logMove(p, v, it.qty, "cancel", o.number, "訂單取消，庫存加回"); }
         });
       }
       if (status === "paid" || (status === "completed" && o.payment.methodId === "cod")) o.payment.status = "paid";
@@ -814,6 +1056,7 @@
 
   window.DB = {
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
+    inventory, suppliers, purchases,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

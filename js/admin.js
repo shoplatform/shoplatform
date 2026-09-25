@@ -23,6 +23,8 @@
   function shell(active, content) {
     const st = DB.settings.get();
     const c = DB.orders.countByStatus();
+    const pc = DB.purchases.countByStatus();
+    const poOpen = pc.ordered + pc.partial; // 待入庫的進貨單
     const link = (href, key, label, badge) =>
       `<a href="#${href}" class="${active === key ? "is-on" : ""}">${label}${badge ? `<span class="badge">${badge}</span>` : ""}</a>`;
     root().innerHTML = `
@@ -37,6 +39,10 @@
             <div class="sep">商品</div>
             ${link("admin/products", "products", "商品")}
             ${link("admin/categories", "categories", "分類")}
+            <div class="sep">進銷存</div>
+            ${link("admin/stock", "stock", "庫存")}
+            ${link("admin/purchases", "purchases", "進貨單", poOpen || "")}
+            ${link("admin/suppliers", "suppliers", "供應商")}
             <div class="sep">行銷</div>
             ${link("admin/coupons", "coupons", "優惠券")}
             ${link("admin/promotions", "promotions", "滿額活動")}
@@ -44,7 +50,7 @@
             <div class="sep">商店</div>
             ${link("admin/settings", "settings", "設定")}
           </nav>
-          <div class="side-foot">骨架版 v0.5 · 金流未串接</div>
+          <div class="side-foot">骨架版 v0.6 · 金流未串接</div>
         </aside>
         <main class="main" id="main">${content}</main>
       </div>`;
@@ -213,6 +219,7 @@
             <div class="panel-head"><h2>規格與庫存</h2><button class="btn btn-sm" id="pe-addopt">新增規格類型</button></div>
             <div class="panel-body">
               <p class="small muted" style="margin:0">例如「顏色」填入「白, 黑」、「尺寸」填入「S, M, L」，系統會自動組合出 6 個規格。不需要規格的商品就留空。</p>
+              <p class="small muted" style="margin:0">庫存建議用「進銷存 → 庫存」的盤點調整或進貨單入庫，這裡直接改也會留下異動紀錄。平均成本會在進貨入庫時自動更新。</p>
               <div id="pe-opts" style="display:grid;gap:8px"></div>
               <div id="pe-vars"></div>
             </div>
@@ -318,19 +325,20 @@
       const key = o => JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
       draft.variants = combos.map(c => {
         const hit = old.find(v => key(v.options) === key(c));
-        return hit || { id: DB.products.newVariantId(), sku: "", options: c, price: old[0] ? old[0].price : 0, stock: 0 };
+        return hit || { id: DB.products.newVariantId(), sku: "", options: c, price: old[0] ? old[0].price : 0, stock: 0, cost: old[0] ? old[0].cost || 0 : 0 };
       });
       drawVars();
     }
     function drawVars() {
       const hasOpts = draft.variants.some(v => Object.keys(v.options).length);
       varsEl.innerHTML = `<div class="table-wrap"><table class="tbl variant-tbl">
-        <thead><tr><th>${hasOpts ? "規格" : "單一規格"}</th><th>貨號</th><th>價格</th><th>庫存</th></tr></thead>
+        <thead><tr><th>${hasOpts ? "規格" : "單一規格"}</th><th>貨號</th><th>售價</th><th>庫存</th><th>平均成本</th></tr></thead>
         <tbody>${draft.variants.map((v, i) => `<tr>
           <td>${esc(Object.values(v.options).join(" / ") || "預設")}</td>
           <td><input type="text" class="v-in" data-i="${i}" data-k="sku" id="pe-v-sku-${i}" value="${esc(v.sku)}" aria-label="貨號"></td>
           <td><input type="number" class="v-in" data-i="${i}" data-k="price" id="pe-v-price-${i}" value="${v.price}" min="0" step="1" aria-label="價格"></td>
           <td><input type="number" class="v-in" data-i="${i}" data-k="stock" id="pe-v-stock-${i}" value="${v.stock}" min="0" step="1" aria-label="庫存"></td>
+          <td><input type="number" class="v-in" data-i="${i}" data-k="cost" id="pe-v-cost-${i}" value="${v.cost || 0}" min="0" step="1" aria-label="平均成本"></td>
         </tr>`).join("")}</tbody></table></div>`;
     }
     drawOpts(); drawVars();
@@ -1042,6 +1050,435 @@
     });
   }
 
+  /* =========================================================
+   * 進銷存：庫存、異動紀錄、進貨單、供應商
+   * ========================================================= */
+  const variantThumb = r => r.image
+    ? `<div class="thumb"><img src="${esc(r.image)}" alt=""></div>`
+    : `<div class="thumb" style="background:${esc(r.color)}">${esc(r.name.slice(0, 1))}</div>`;
+  const PO_PILL = { draft: "idle", ordered: "info", partial: "warn", received: "ok", cancelled: "bad" };
+  const poPill = s => `<span class="pill ${PO_PILL[s]}">${DB.purchases.STATUS[s]}</span>`;
+  const MOVE_PILL = { sale: "info", cancel: "warn", purchase: "ok", adjust: "warn", edit: "idle", initial: "idle" };
+  const signed = n => (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n);
+
+  /* ---------- 庫存總覽 ---------- */
+  const sf = { q: "", filter: "" };
+  function viewStock() {
+    const s = DB.inventory.summary();
+    shell("stock", `
+      <div class="page-head"><h1>庫存</h1>
+        <div class="actions"><a class="btn" href="#admin/moves">異動紀錄</a><button class="btn" id="st-export">匯出 Excel</button><a class="btn btn-primary" href="#admin/purchase/new">建立進貨單</a></div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><span>規格數</span><strong>${s.skus}</strong><small>含草稿商品</small></div>
+        <div class="kpi"><span>庫存件數</span><strong>${s.units.toLocaleString("zh-TW")}</strong><small>在途 ${s.incoming} 件</small></div>
+        <div class="kpi"><span>庫存成本</span><strong>${money(s.value)}</strong><small>庫存 × 平均成本</small></div>
+        <a class="kpi" href="#admin/stock" data-low="1"><span>庫存偏低</span><strong>${s.low}</strong><small>上架中、≤ ${DB.settings.get().lowStockAlert} 件</small></a>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><div class="toolbar">
+          <input type="search" id="sf-q" placeholder="搜尋商品、規格、貨號" value="${esc(sf.q)}" aria-label="搜尋庫存">
+          <select id="sf-filter" aria-label="篩選"><option value="">全部</option><option value="low" ${sf.filter === "low" ? "selected" : ""}>庫存偏低</option><option value="out" ${sf.filter === "out" ? "selected" : ""}>缺貨</option></select>
+        </div></div>
+        <div id="sf-list"></div>
+      </section>`);
+    const draw = () => {
+      const rows = DB.inventory.list(sf);
+      document.getElementById("sf-list").innerHTML = rows.length ? `<div class="table-wrap"><table class="tbl">
+        <thead><tr><th>商品／規格</th><th>貨號</th><th class="r">可售庫存</th><th class="r">在途</th><th class="r">平均成本</th><th class="r">庫存成本</th><th></th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td><div class="prod-cell">${variantThumb(r)}<div><a href="#admin/product/${r.productId}">${esc(r.name)}</a><span class="small muted">${esc(r.optionText || "單一規格")}${r.status === "draft" ? "・草稿" : ""}</span></div></div></td>
+          <td class="mono small">${esc(r.sku)}</td>
+          <td class="r num">${r.stock === 0 ? `<span class="pill bad">0</span>` : r.low ? `<span class="pill warn">${r.stock}</span>` : r.stock}</td>
+          <td class="r num">${r.incoming ? `<span class="pill info">+${r.incoming}</span>` : `<span class="muted">—</span>`}</td>
+          <td class="r num">${r.cost ? money(r.cost) : `<span class="muted">—</span>`}</td>
+          <td class="r num">${money(r.value)}</td>
+          <td class="r"><button class="btn btn-sm" data-adjust="${r.variantId}">調整</button> <a class="btn btn-sm btn-ghost" href="#admin/moves/${r.variantId}">紀錄</a></td>
+        </tr>`).join("")}</tbody></table></div>` : `<div class="empty">沒有符合的規格</div>`;
+    };
+    draw();
+    document.getElementById("sf-q").addEventListener("input", e => { sf.q = e.target.value; draw(); });
+    document.getElementById("sf-filter").addEventListener("change", e => { sf.filter = e.target.value; draw(); });
+    root().querySelector("[data-low]").addEventListener("click", () => { sf.filter = "low"; });
+    document.getElementById("sf-list").addEventListener("click", e => {
+      const b = e.target.closest("[data-adjust]");
+      if (b) adjustPrompt(b.dataset.adjust, viewStock);
+    });
+    document.getElementById("st-export").addEventListener("click", () => {
+      const rows = DB.inventory.list();
+      const d = new Date(), pad = n => String(n).padStart(2, "0");
+      download(XLSX.build([{
+        name: "庫存",
+        columns: [
+          { header: "商品", width: 18 }, { header: "規格", width: 12 }, { header: "貨號", width: 14 }, { header: "狀態", width: 8 },
+          { header: "售價", width: 9, type: "number" }, { header: "可售庫存", width: 9, type: "number" }, { header: "在途", width: 7, type: "number" },
+          { header: "平均成本", width: 10, type: "number" }, { header: "庫存成本", width: 11, type: "number" },
+        ],
+        rows: rows.map(r => [r.name, r.optionText, r.sku, r.status === "active" ? "上架中" : "草稿", r.price, r.stock, r.incoming, r.cost, r.value]),
+      }]), `庫存_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.xlsx`);
+      toast(`已匯出 ${rows.length} 個規格`);
+    });
+  }
+
+  function adjustPrompt(variantId, after) {
+    const r = DB.inventory.list().find(x => x.variantId === variantId);
+    if (!r) return;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `<form class="modal is-wide" id="aj-form" role="dialog" aria-modal="true" aria-labelledby="aj-title" novalidate>
+      <h3 id="aj-title">調整庫存</h3>
+      <p>${esc(r.name)}${r.optionText ? `・${esc(r.optionText)}` : ""}　<span class="mono">${esc(r.sku)}</span><br>目前庫存 <b class="num">${r.stock}</b></p>
+      <div class="radio-list">
+        <label class="check"><input type="radio" name="aj-mode" value="set" checked> 盤點後的實際數量</label>
+        <label class="check"><input type="radio" name="aj-mode" value="delta"> 增加或減少（減少請填負數）</label>
+      </div>
+      <div class="grid-form">
+        <div class="field"><label for="aj-qty" id="aj-qty-l">實際數量</label><input type="number" id="aj-qty" step="1" value="${r.stock}"></div>
+        <div class="field"><label for="aj-reason">原因</label><select id="aj-reason">${DB.inventory.ADJUST_REASONS.map(x => `<option>${esc(x)}</option>`).join("")}</select></div>
+      </div>
+      <div class="field"><label for="aj-note">備註（選填）</label><input type="text" id="aj-note" maxlength="60" placeholder="例如 10/1 月底盤點"></div>
+      <p class="small" id="aj-preview" style="margin:0"></p>
+      <div class="modal-actions"><button type="button" class="btn" id="aj-cancel">取消</button><button class="btn btn-primary" type="submit">確認調整</button></div>
+    </form>`;
+    document.body.appendChild(wrap);
+    const f = wrap.querySelector("#aj-form");
+    const mode = () => f.querySelector('input[name="aj-mode"]:checked').value;
+    const preview = () => {
+      const n = Math.floor(+f.querySelector("#aj-qty").value || 0);
+      const target = mode() === "set" ? n : r.stock + n;
+      const d = target - r.stock;
+      f.querySelector("#aj-preview").innerHTML = d === 0 ? `<span class="muted">數量沒有變化</span>`
+        : `調整後 <b class="num">${target}</b>（${d > 0 ? "多" : "少"} ${Math.abs(d)} 件）${target < 0 ? `<span style="color:var(--bad)">　不能小於 0</span>` : ""}`;
+    };
+    f.addEventListener("change", e => {
+      if (e.target.name === "aj-mode") {
+        f.querySelector("#aj-qty-l").textContent = mode() === "set" ? "實際數量" : "增減數量";
+        f.querySelector("#aj-qty").value = mode() === "set" ? r.stock : 0;
+      }
+      preview();
+    });
+    f.addEventListener("input", preview);
+    preview();
+    const close = () => wrap.remove();
+    wrap.querySelector("#aj-cancel").addEventListener("click", close);
+    wrap.addEventListener("click", e => { if (e.target === wrap) close(); });
+    f.querySelector("#aj-qty").select();
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      try {
+        const res = DB.inventory.adjust(variantId, { mode: mode(), qty: f.querySelector("#aj-qty").value, reason: f.querySelector("#aj-reason").value, note: f.querySelector("#aj-note").value });
+        close(); toast(`庫存已調整為 ${res.stock}（${signed(res.delta)}）`); after();
+      } catch (err) { toast(err.message, "error"); }
+    });
+  }
+
+  /* ---------- 庫存異動紀錄 ---------- */
+  const mf = { q: "", type: "" };
+  function viewMoves(variantId) {
+    variantId = variantId || "";
+    const one = variantId ? DB.inventory.list().find(r => r.variantId === variantId) : null;
+    const poId = {}; DB.purchases.list().forEach(po => { poId[po.number] = po.id; });
+    shell("stock", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/stock">庫存</a><span>/</span><span>異動紀錄${one ? `：${esc(one.name)}${one.optionText ? "・" + esc(one.optionText) : ""}` : ""}</span></div>
+        ${one ? `<div class="actions"><span class="muted">目前庫存 <b class="num">${one.stock}</b></span><button class="btn" id="mv-adjust">調整</button><a class="btn btn-ghost" href="#admin/moves">看全部</a></div>` : ""}
+      </div>
+      <section class="panel">
+        <div class="panel-head"><div class="toolbar">
+          ${one ? "" : `<input type="search" id="mf-q" placeholder="搜尋商品、貨號、單號" value="${esc(mf.q)}" aria-label="搜尋異動">`}
+          <select id="mf-type" aria-label="類型"><option value="">全部類型</option>${Object.entries(DB.inventory.MOVE_TYPES).map(([k, v]) => `<option value="${k}" ${mf.type === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+        </div><span class="small muted">最新的在最上面</span></div>
+        <div id="mf-list"></div>
+      </section>`);
+    const draw = () => {
+      const list = DB.inventory.movements({ q: one ? "" : mf.q, type: mf.type, variantId });
+      document.getElementById("mf-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
+        <thead><tr><th>時間</th>${one ? "" : "<th>商品／規格</th><th>貨號</th>"}<th>類型</th><th class="r">異動</th><th class="r">結存</th><th>單據</th><th>備註</th></tr></thead>
+        <tbody>${list.map(m => {
+          const ref = !m.ref ? `<span class="muted">—</span>`
+            : m.ref.startsWith("PO") && poId[m.ref] ? `<a class="mono" href="#admin/purchase/${poId[m.ref]}">${esc(m.ref)}</a>`
+            : m.ref.startsWith("SO") && DB.orders.get(m.ref) ? `<a class="mono" href="#admin/order/${DB.orders.get(m.ref).id}">${esc(m.ref)}</a>`
+            : `<span class="mono">${esc(m.ref)}</span>`;
+          return `<tr>
+            <td class="num small">${date(m.at, true)}</td>
+            ${one ? "" : `<td>${esc(m.name)}<div class="small muted">${esc(m.optionText || "單一規格")}</div></td><td class="mono small">${esc(m.sku)}</td>`}
+            <td><span class="pill ${MOVE_PILL[m.type]}">${DB.inventory.MOVE_TYPES[m.type]}</span></td>
+            <td class="r num"><b style="color:${m.delta > 0 ? "var(--ok)" : "var(--bad)"}">${signed(m.delta)}</b></td>
+            <td class="r num">${m.after}</td>
+            <td>${ref}</td>
+            <td class="small" style="white-space:normal;min-width:160px">${esc(m.note) || `<span class="muted">—</span>`}</td>
+          </tr>`;
+        }).join("")}</tbody></table></div>` : `<div class="empty">沒有異動紀錄</div>`;
+    };
+    draw();
+    const q = document.getElementById("mf-q");
+    if (q) q.addEventListener("input", e => { mf.q = e.target.value; draw(); });
+    document.getElementById("mf-type").addEventListener("change", e => { mf.type = e.target.value; draw(); });
+    const aj = document.getElementById("mv-adjust");
+    if (aj) aj.addEventListener("click", () => adjustPrompt(variantId, () => viewMoves(variantId)));
+  }
+
+  /* ---------- 進貨單列表 ---------- */
+  let pq = "";
+  function viewPurchases(status) {
+    status = status || "";
+    const c = DB.purchases.countByStatus();
+    const tab = (s, label) => `<a href="#admin/purchases${s ? "/" + s : ""}" class="${status === s ? "is-on" : ""}">${label}<span class="n">${s ? c[s] : c.all}</span></a>`;
+    shell("purchases", `
+      <div class="page-head"><h1>進貨單</h1><div class="actions"><a class="btn btn-primary" href="#admin/purchase/new">建立進貨單</a></div></div>
+      <section class="panel">
+        <nav class="tabs" aria-label="進貨單狀態">${tab("", "全部")}${tab("draft", "草稿")}${tab("ordered", "已下單")}${tab("partial", "部分入庫")}${tab("received", "已入庫")}${tab("cancelled", "已取消")}</nav>
+        <div class="panel-head"><div class="toolbar"><input type="search" id="pq" placeholder="搜尋單號、供應商、商品" value="${esc(pq)}" aria-label="搜尋進貨單"></div></div>
+        <div id="po-list"></div>
+      </section>`);
+    const draw = () => {
+      const list = DB.purchases.list({ status, q: pq });
+      document.getElementById("po-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
+        <thead><tr><th>單號</th><th>供應商</th><th>建立日期</th><th>預計到貨</th><th>品項</th><th class="r">數量（已收／訂購）</th><th class="r">金額</th><th>狀態</th></tr></thead>
+        <tbody>${list.map(po => {
+          const qty = po.items.reduce((s, it) => s + it.qty, 0), got = po.items.reduce((s, it) => s + it.received, 0);
+          return `<tr class="is-link" data-href="admin/purchase/${po.id}">
+            <td class="mono">${esc(po.number)}</td><td>${esc(po.supplierName)}</td><td class="num">${date(po.createdAt)}</td>
+            <td class="num">${po.expectedAt ? po.expectedAt.replace(/-/g, "/") : `<span class="muted">—</span>`}</td>
+            <td style="white-space:normal;min-width:160px" class="small">${esc(po.items.map(it => it.name + (it.optionText ? "／" + it.optionText : "")).join("、"))}</td>
+            <td class="r num">${got} / ${qty}</td><td class="r num">${money(po.total)}</td><td>${poPill(po.status)}</td>
+          </tr>`;
+        }).join("")}</tbody></table></div>` : `<div class="empty">沒有符合的進貨單</div>`;
+    };
+    draw();
+    document.getElementById("pq").addEventListener("input", e => { pq = e.target.value; draw(); });
+  }
+
+  /* ---------- 進貨單：建立／編輯草稿／入庫 ---------- */
+  function viewPurchase(id) {
+    const isNew = id === "new";
+    const po = isNew ? null : DB.purchases.get(id);
+    if (!isNew && !po) return notFound("找不到這張進貨單", "admin/purchases");
+    if (isNew || po.status === "draft") return purchaseForm(po);
+    return purchaseView(po);
+  }
+
+  let poPreset = ""; // 從供應商頁按「向他進貨」帶過來
+  function purchaseForm(po) {
+    const sups = DB.suppliers.list();
+    const rows = DB.inventory.list();
+    const byVar = {}; rows.forEach(r => { byVar[r.variantId] = r; });
+    const draft = po ? { ...po, items: po.items.map(it => ({ variantId: it.variantId, qty: it.qty, cost: it.cost })) }
+      : { supplierId: (sups.find(x => x.id === poPreset) || sups[0] || {}).id || "", expectedAt: "", note: "", items: [] };
+    poPreset = "";
+    const low = DB.settings.get().lowStockAlert;
+    shell("purchases", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/purchases">進貨單</a><span>/</span><span>${po ? `<span class="mono">${esc(po.number)}</span>（草稿）` : "建立進貨單"}</span></div>
+        <div class="actions">
+          ${po ? `<button class="btn" id="pf-del">刪除草稿</button>` : ""}
+          <button class="btn" id="pf-save">儲存草稿</button>
+          <button class="btn btn-primary" id="pf-place">儲存並下單</button>
+        </div>
+      </div>
+      ${sups.length ? "" : `<div class="notice">還沒有供應商，請先<a href="#admin/supplier/new">新增供應商</a>。</div>`}
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>進貨品項</h2><div class="actions"><button class="btn btn-sm" type="button" id="pf-low">帶入庫存偏低的規格</button><button class="btn btn-sm" type="button" id="pf-add">新增品項</button></div></div>
+          <div id="pf-lines"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>進貨資訊</h2></div>
+          <div class="panel-body">
+            <div class="field"><label for="pf-sup">供應商</label><select id="pf-sup">${sups.map(s => `<option value="${s.id}" ${draft.supplierId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select><a class="small" href="#admin/supplier/new">新增供應商</a></div>
+            <div class="field"><label for="pf-exp">預計到貨日</label><input type="date" id="pf-exp" value="${esc(draft.expectedAt)}"></div>
+            <div class="field"><label for="pf-note">備註</label><textarea id="pf-note" rows="3" placeholder="例如 付款條件、交期">${esc(draft.note)}</textarea></div>
+          </div>
+        </section>
+      </div>`);
+    const linesEl = document.getElementById("pf-lines");
+    const option = (r, sel) => `<option value="${r.variantId}" ${sel === r.variantId ? "selected" : ""}>${esc(r.name)}${r.optionText ? "／" + esc(r.optionText) : ""}（${esc(r.sku)}，庫存 ${r.stock}）</option>`;
+    function drawLines() {
+      const total = draft.items.reduce((s, it) => s + (+it.qty || 0) * (+it.cost || 0), 0);
+      linesEl.innerHTML = draft.items.length ? `<div class="table-wrap"><table class="tbl variant-tbl po-tbl">
+        <thead><tr><th>商品／規格</th><th>數量</th><th>進價</th><th class="r">小計</th><th></th></tr></thead>
+        <tbody>${draft.items.map((it, i) => `<tr>
+          <td><select data-i="${i}" data-k="variantId" id="pf-v-${i}" aria-label="商品規格">${rows.map(r => option(r, it.variantId)).join("")}</select></td>
+          <td><input type="number" data-i="${i}" data-k="qty" id="pf-q-${i}" value="${it.qty}" min="1" step="1" aria-label="數量"></td>
+          <td><input type="number" data-i="${i}" data-k="cost" id="pf-c-${i}" value="${it.cost}" min="0" step="1" aria-label="進價"></td>
+          <td class="r num" id="pf-sub-${i}">${money((+it.qty || 0) * (+it.cost || 0))}</td>
+          <td class="r"><button class="btn btn-sm btn-ghost" type="button" data-del="${i}">移除</button></td>
+        </tr>`).join("")}
+        <tr><td colspan="3" class="r"><b>合計</b></td><td class="r num"><b id="pf-total">${money(total)}</b></td><td></td></tr>
+        </tbody></table></div>` : `<div class="empty">還沒有品項，按「新增品項」或「帶入庫存偏低的規格」</div>`;
+    }
+    drawLines();
+    const addLine = r => draft.items.push({ variantId: r.variantId, qty: 10, cost: r.cost || 0 });
+    document.getElementById("pf-add").addEventListener("click", () => {
+      const used = new Set(draft.items.map(it => it.variantId));
+      const r = rows.find(x => !used.has(x.variantId));
+      if (!r) return toast("所有規格都已經在單子上了", "error");
+      addLine(r); drawLines();
+    });
+    document.getElementById("pf-low").addEventListener("click", () => {
+      const used = new Set(draft.items.map(it => it.variantId));
+      // 上架中、庫存＋在途仍然偏低的規格；建議補到「提醒數量的 3 倍」
+      const picks = rows.filter(r => r.status === "active" && r.stock + r.incoming <= low && !used.has(r.variantId));
+      if (!picks.length) return toast("沒有需要補貨的規格（已經算進在途數量）");
+      picks.forEach(r => draft.items.push({ variantId: r.variantId, qty: Math.max(1, (low + 1) * 3 - r.stock - r.incoming), cost: r.cost || 0 }));
+      drawLines(); toast(`已帶入 ${picks.length} 個規格`);
+    });
+    linesEl.addEventListener("input", e => {
+      const el = e.target.closest("[data-k]"); if (!el) return;
+      const it = draft.items[+el.dataset.i];
+      if (el.dataset.k === "variantId") { it.variantId = el.value; it.cost = (byVar[el.value] || {}).cost || 0; return drawLines(); }
+      it[el.dataset.k] = +el.value;
+      document.getElementById(`pf-sub-${el.dataset.i}`).textContent = money((+it.qty || 0) * (+it.cost || 0));
+      document.getElementById("pf-total").textContent = money(draft.items.reduce((s, x) => s + (+x.qty || 0) * (+x.cost || 0), 0));
+    });
+    linesEl.addEventListener("change", e => {
+      const el = e.target.closest('select[data-k="variantId"]'); if (!el) return;
+      const it = draft.items[+el.dataset.i];
+      it.variantId = el.value; it.cost = (byVar[el.value] || {}).cost || 0; drawLines();
+    });
+    linesEl.addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (b) { draft.items.splice(+b.dataset.del, 1); drawLines(); } });
+    const collect = () => ({ id: po ? po.id : undefined, supplierId: document.getElementById("pf-sup").value, expectedAt: document.getElementById("pf-exp").value, note: document.getElementById("pf-note").value, items: draft.items });
+    document.getElementById("pf-save").addEventListener("click", () => {
+      try { const s = DB.purchases.save(collect()); toast("已儲存草稿"); Router.go("admin/purchase/" + s.id); }
+      catch (err) { toast(err.message, "error"); }
+    });
+    document.getElementById("pf-place").addEventListener("click", async () => {
+      try {
+        const s = DB.purchases.save(collect());
+        if (!await confirmBox({ title: `送出 ${s.number}？`, body: `向「${s.supplierName}」下單 ${s.items.reduce((a, it) => a + it.qty, 0)} 件，金額 ${money(s.total)}。下單後品項不能再改，貨到了再到這張單按「入庫」。`, ok: "確認下單" })) return Router.go("admin/purchase/" + s.id);
+        DB.purchases.place(s.id); toast("已下單"); Router.go("admin/purchase/" + s.id);
+      } catch (err) { toast(err.message, "error"); }
+    });
+    const del = document.getElementById("pf-del");
+    if (del) del.addEventListener("click", async () => {
+      if (await confirmBox({ title: `刪除草稿 ${po.number}？`, ok: "刪除", danger: true })) { DB.purchases.remove(po.id); toast("已刪除"); Router.go("admin/purchases"); }
+    });
+  }
+
+  function purchaseView(po) {
+    const open = po.status === "ordered" || po.status === "partial";
+    const left = it => it.qty - it.received;
+    shell("purchases", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/purchases">進貨單</a><span>/</span><span class="mono">${esc(po.number)}</span></div>
+        <div class="actions">${open ? `<button class="btn" id="pv-cancel">${po.status === "partial" ? "剩下的不收了" : "取消進貨單"}</button>` : ""}</div>
+      </div>
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>進貨品項</h2>${poPill(po.status)}</div>
+          <div class="table-wrap"><table class="tbl po-tbl">
+            <thead><tr><th>商品／規格</th><th>貨號</th><th class="r">進價</th><th class="r">訂購</th><th class="r">已收</th>${open ? "<th>這次收到</th>" : ""}<th class="r">小計</th></tr></thead>
+            <tbody>${po.items.map(it => `<tr>
+              <td>${esc(it.name)}<div class="small muted">${esc(it.optionText || "單一規格")}</div></td>
+              <td class="mono small">${esc(it.sku)}</td>
+              <td class="r num">${money(it.cost)}</td><td class="r num">${it.qty}</td>
+              <td class="r num">${it.received >= it.qty ? `<span class="pill ok">${it.received}</span>` : it.received}</td>
+              ${open ? `<td>${left(it) > 0 ? `<input type="number" class="rc-in" data-v="${it.variantId}" id="rc-${it.variantId}" min="0" max="${left(it)}" step="1" value="${left(it)}" aria-label="這次收到數量" style="max-width:96px">` : `<span class="muted small">已收齊</span>`}</td>` : ""}
+              <td class="r num">${money(it.qty * it.cost)}</td>
+            </tr>`).join("")}
+            <tr><td colspan="${open ? 6 : 5}" class="r"><b>合計</b></td><td class="r num"><b>${money(po.total)}</b></td></tr>
+            </tbody></table></div>
+          ${open ? `<div class="panel-body" style="border-top:1px solid var(--line)">
+            <div class="toolbar"><input type="text" id="rc-note" placeholder="入庫備註（選填），例如 缺 2 件下週補" style="max-width:340px"><button class="btn btn-primary" id="rc-go">入庫</button></div>
+            <p class="small muted" style="margin:0">入庫後會加到可售庫存、留下異動紀錄，並用這次的進價更新平均成本。沒收到的品項數量填 0。</p>
+          </div>` : ""}
+        </section>
+        <div style="display:grid;gap:16px">
+          <section class="panel">
+            <div class="panel-head"><h2>進貨資訊</h2></div>
+            <div class="panel-body"><dl class="kv">
+              <dt>供應商</dt><dd>${DB.suppliers.get(po.supplierId) ? `<a href="#admin/supplier/${po.supplierId}">${esc(po.supplierName)}</a>` : esc(po.supplierName)}</dd>
+              <dt>建立</dt><dd class="num">${date(po.createdAt, true)}</dd>
+              <dt>預計到貨</dt><dd class="num">${po.expectedAt ? po.expectedAt.replace(/-/g, "/") : "—"}</dd>
+              ${po.note ? `<dt>備註</dt><dd>${esc(po.note)}</dd>` : ""}
+            </dl></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>紀錄</h2></div>
+            <div class="panel-body"><ul class="timeline">
+              ${po.history.slice().reverse().map(h => `<li><div><b>${DB.purchases.STATUS[h.status]}</b> <span class="muted num">${date(h.at, true)}</span>${h.note ? `<div class="muted">${esc(h.note)}</div>` : ""}</div></li>`).join("")}
+            </ul></div>
+          </section>
+        </div>
+      </div>`);
+    const go = document.getElementById("rc-go");
+    if (go) go.addEventListener("click", async () => {
+      const qtys = {};
+      root().querySelectorAll(".rc-in").forEach(el => { qtys[el.dataset.v] = Math.floor(+el.value || 0); });
+      const n = Object.values(qtys).reduce((s, x) => s + x, 0);
+      if (n <= 0) return toast("請填這次收到的數量", "error");
+      if (!await confirmBox({ title: `入庫 ${n} 件？`, body: "庫存會立刻增加，入庫後不能撤回（數量有誤請用庫存調整）。", ok: "確認入庫" })) return;
+      try { DB.purchases.receive(po.id, qtys, document.getElementById("rc-note").value.trim()); toast(`已入庫 ${n} 件`); viewPurchase(po.id); }
+      catch (err) { toast(err.message, "error"); }
+    });
+    const cancel = document.getElementById("pv-cancel");
+    if (cancel) cancel.addEventListener("click", async () => {
+      const partial = po.status === "partial";
+      if (!await confirmBox({ title: partial ? "剩下的不收了？" : `取消 ${po.number}？`, body: partial ? "已經收到的保留，沒收到的數量從這張單移除，單子改為已入庫。" : "還沒入庫，取消不會影響庫存。", ok: partial ? "確認" : "取消進貨單", danger: !partial })) return;
+      try { DB.purchases.cancel(po.id); toast(partial ? "已結案" : "已取消"); viewPurchase(po.id); }
+      catch (err) { toast(err.message, "error"); }
+    });
+  }
+
+  /* ---------- 供應商 ---------- */
+  function viewSuppliers() {
+    const list = DB.suppliers.list();
+    shell("suppliers", `
+      <div class="page-head"><h1>供應商</h1><div class="actions"><a class="btn btn-primary" href="#admin/supplier/new">新增供應商</a></div></div>
+      <section class="panel">
+        ${list.length ? `<div class="table-wrap"><table class="tbl">
+          <thead><tr><th>名稱</th><th>聯絡人</th><th>電話</th><th>Email</th><th class="r">進貨單</th><th>最後進貨</th></tr></thead>
+          <tbody>${list.map(s => `<tr class="is-link" data-href="admin/supplier/${s.id}">
+            <td>${esc(s.name)}</td><td>${esc(s.contact) || "—"}</td><td class="mono">${esc(s.phone) || "—"}</td><td>${esc(s.email) || "—"}</td>
+            <td class="r num">${s.poCount}</td><td class="num">${date(s.lastAt)}</td>
+          </tr>`).join("")}</tbody></table></div>` : `<div class="empty">還沒有供應商</div>`}
+      </section>`);
+  }
+
+  function viewSupplierEdit(id) {
+    const isNew = id === "new";
+    const s = isNew ? { name: "", contact: "", phone: "", email: "", taxId: "", address: "", note: "" } : DB.suppliers.get(id);
+    if (!s) return notFound("找不到這個供應商", "admin/suppliers");
+    const pos = isNew ? [] : DB.purchases.list().filter(po => po.supplierId === s.id);
+    const f = (k, label, extra = "") => `<div class="field"><label for="sp-${k}">${label}</label><input type="text" id="sp-${k}" value="${esc(s[k])}" ${extra}></div>`;
+    shell("suppliers", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/suppliers">供應商</a><span>/</span><span>${isNew ? "新增供應商" : esc(s.name)}</span></div>
+        <div class="actions">${isNew ? "" : `<a class="btn" href="#admin/purchase/new" id="sp-po">向他進貨</a><button class="btn" id="sp-del">刪除</button>`}<button class="btn btn-primary" id="sp-save">儲存</button></div>
+      </div>
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>基本資料</h2></div>
+          <div class="panel-body grid-form">
+            ${f("name", "名稱", 'maxlength="40"')}${f("contact", "聯絡人", 'maxlength="20"')}
+            ${f("phone", "電話", 'maxlength="20"')}${f("email", "Email", 'maxlength="60"')}
+            ${f("taxId", "統一編號（選填）", 'maxlength="8" inputmode="numeric"')}${f("address", "地址", 'maxlength="80"')}
+            <div class="field full"><label for="sp-note">備註</label><textarea id="sp-note" rows="3" placeholder="例如 交期、付款條件、最低訂量">${esc(s.note)}</textarea></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>進貨紀錄</h2></div>
+          ${pos.length ? `<div class="table-wrap"><table class="tbl"><tbody>${pos.map(po => `<tr class="is-link" data-href="admin/purchase/${po.id}">
+            <td class="mono">${esc(po.number)}</td><td class="num">${date(po.createdAt)}</td><td class="r num">${money(po.total)}</td><td>${poPill(po.status)}</td>
+          </tr>`).join("")}</tbody></table></div>` : `<div class="empty">還沒有進貨紀錄</div>`}
+        </section>
+      </div>`);
+    const val = k => document.getElementById("sp-" + k).value;
+    const poBtn = document.getElementById("sp-po");
+    if (poBtn) poBtn.addEventListener("click", () => { poPreset = s.id; });
+    document.getElementById("sp-save").addEventListener("click", () => {
+      try {
+        const saved = DB.suppliers.save({ id: s.id, name: val("name"), contact: val("contact"), phone: val("phone"), email: val("email"), taxId: val("taxId"), address: val("address"), note: val("note") });
+        toast("已儲存供應商"); Router.go("admin/supplier/" + saved.id);
+      } catch (err) { toast(err.message, "error"); }
+    });
+    const del = document.getElementById("sp-del");
+    if (del) del.addEventListener("click", async () => {
+      if (!await confirmBox({ title: `刪除「${s.name}」？`, body: "過去的進貨單會保留供應商名稱。", ok: "刪除", danger: true })) return;
+      try { DB.suppliers.remove(s.id); toast("已刪除"); Router.go("admin/suppliers"); } catch (err) { toast(err.message, "error"); }
+    });
+  }
+
   function notFound(msg, back) {
     shell("", `<div class="panel"><div class="empty">${esc(msg)}<div style="margin-top:12px"><a class="btn" href="#${back}">返回</a></div></div></div>`);
   }
@@ -1070,6 +1507,12 @@
       case "promotions": return viewPromotions();
       case "promotion": return viewPromotionEdit(arg);
       case "tiers": return viewTiers();
+      case "stock": return viewStock();
+      case "moves": return viewMoves(arg);
+      case "purchases": return viewPurchases(arg);
+      case "purchase": return viewPurchase(arg);
+      case "suppliers": return viewSuppliers();
+      case "supplier": return viewSupplierEdit(arg);
       default: return notFound("找不到這個頁面", "admin");
     }
   };

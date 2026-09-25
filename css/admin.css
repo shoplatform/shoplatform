@@ -49,6 +49,7 @@ a.kpi:hover { border-color: var(--accent); }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .toolbar input[type="search"] { max-width: 260px; }
 .toolbar select { width: auto; }
+.panel-head > .toolbar { flex: 1; }
 
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding: 0 8px; }
 .tabs a { padding: 10px 12px; font-size: 14px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; }
@@ -94,6 +95,10 @@ a.kpi:hover { border-color: var(--accent); }
 .method-row:last-child { border-bottom: 0; }
 
 .modal.is-wide { max-width: 460px; }
+/* 進貨單品項表 */
+.po-tbl select { min-width: 260px; }
+.po-tbl input[type="number"] { min-width: 84px; }
+
 /* 會員等級設定表 */
 .tier-tbl input[type="text"] { min-width: 110px; }
 .tier-tbl input[type="number"] { min-width: 88px; }
@@ -113,7 +118,9 @@ a.kpi:hover { border-color: var(--accent); }
   .grid-2 { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  .admin { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr)：選單很長時只在選單裡橫向捲動，不把整頁撐寬 */
+  .admin { grid-template-columns: minmax(0, 1fr); }
+  .side, .side nav { min-width: 0; }
   .side { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 12px; gap: 8px; }
   .side-brand, .side-foot, .side nav .sep { display: none; }
   .side nav { display: flex; overflow-x: auto; gap: 4px; }

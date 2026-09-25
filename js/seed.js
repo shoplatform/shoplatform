@@ -81,6 +81,9 @@ window.makeSeed = function () {
     },
   ];
   products.forEach(p => { p.images = []; });
+  // 平均進貨成本（進銷存用）
+  const COST = { p_cup: 280, p_tee: 360, p_apron: 520, p_candle: 300, p_tote: 230, p_cutlery: 190 };
+  products.forEach(p => p.variants.forEach(v => { v.cost = COST[p.id]; }));
 
   const customers = [
     { id: "u_1", name: "林雨潔", phone: "0912345678", email: "yuchieh@example.com", createdAt: iso(28) },
@@ -98,7 +101,7 @@ window.makeSeed = function () {
     return {
       productId: p.id, variantId: v.id, name: p.name,
       optionText: Object.values(v.options).join(" / "),
-      sku: v.sku, price: v.price, qty,
+      sku: v.sku, price: v.price, qty, cost: v.cost,
     };
   }
   function order(no, customerId, items, shipId, status, daysAgo, extra) {
@@ -133,6 +136,55 @@ window.makeSeed = function () {
   ];
   orders[1].shipping.trackingNo = "F12345678901";
 
+  /* ---------- 進銷存：供應商、進貨單、庫存異動 ---------- */
+  const suppliers = [
+    { id: "sp_clay", name: "土感陶作工房", contact: "吳師傅", phone: "049-2345-678", email: "clay@example.com", taxId: "", address: "南投縣水里鄉", note: "手作陶器，交期約 2 週", createdAt: iso(60) },
+    { id: "sp_textile", name: "棉麻織造社", contact: "李小姐", phone: "02-2765-4321", email: "textile@example.com", taxId: "", address: "新北市三重區", note: "服飾、圍裙、帆布包", createdAt: iso(60) },
+    { id: "sp_scent", name: "森調香氛工作室", contact: "周先生", phone: "0933-222-111", email: "scent@example.com", taxId: "", address: "台中市南屯區", note: "", createdAt: iso(50) },
+  ];
+  const vOf = (pid, i) => products.find(p => p.id === pid).variants[i];
+  function poLine(pid, i, qty, received) {
+    const p = products.find(x => x.id === pid), v = p.variants[i];
+    return { productId: pid, variantId: v.id, name: p.name, optionText: Object.values(v.options).join(" / "), sku: v.sku, qty, cost: v.cost, received };
+  }
+  const ymdAt = n => { const d = new Date(now + n * day); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const purchases = [
+    { id: "po_1", number: "PO240001", supplierId: "sp_clay", supplierName: "土感陶作工房", status: "received", expectedAt: ymdAt(-14), note: "",
+      items: [poLine("p_cup", 0, 10, 10), poLine("p_cup", 1, 3, 3)], createdAt: iso(20), orderedAt: iso(20), receivedAt: iso(14),
+      history: [{ status: "draft", at: iso(20) }, { status: "ordered", at: iso(20) }, { status: "received", at: iso(14), note: "手捏陶杯／霧白 ×10、手捏陶杯／灰藍 ×3" }] },
+    { id: "po_2", number: "PO240002", supplierId: "sp_scent", supplierName: "森調香氛工作室", status: "received", expectedAt: ymdAt(-12), note: "",
+      items: [poLine("p_candle", 0, 20, 20)], createdAt: iso(16), orderedAt: iso(16), receivedAt: iso(12),
+      history: [{ status: "draft", at: iso(16) }, { status: "ordered", at: iso(16) }, { status: "received", at: iso(12), note: "雪松大豆蠟燭 ×20" }] },
+    { id: "po_3", number: "PO240003", supplierId: "sp_textile", supplierName: "棉麻織造社", status: "ordered", expectedAt: ymdAt(5), note: "墨綠托特包補貨",
+      items: [poLine("p_tote", 1, 10, 0), poLine("p_apron", 1, 6, 0)], createdAt: iso(2), orderedAt: iso(2),
+      history: [{ status: "draft", at: iso(2) }, { status: "ordered", at: iso(2) }] },
+    { id: "po_4", number: "PO240004", supplierId: "sp_clay", supplierName: "土感陶作工房", status: "draft", expectedAt: "", note: "松綠已售完，等確認釉色再下單",
+      items: [poLine("p_cup", 2, 12, 0)], createdAt: iso(1), history: [{ status: "draft", at: iso(1) }] },
+  ];
+
+  // 庫存異動：依時間排出進貨與銷售，再從「現在的庫存」往回推期初數量，讓帳對得起來
+  const events = [];
+  purchases.filter(po => po.status === "received").forEach(po => po.items.forEach(it =>
+    events.push({ at: po.receivedAt, variantId: it.variantId, delta: it.received, type: "purchase", ref: po.number, note: `${po.supplierName}，進價 NT$${it.cost}` })));
+  orders.forEach(o => o.items.forEach(it =>
+    events.push({ at: o.createdAt, variantId: it.variantId, delta: -it.qty, type: "sale", ref: o.number, note: "" })));
+  events.sort((a, b) => a.at.localeCompare(b.at));
+  const movements = [];
+  let mvSeq = 0;
+  products.forEach(p => p.variants.forEach(v => {
+    const net = events.filter(e => e.variantId === v.id).reduce((s, e) => s + e.delta, 0);
+    const opening = v.stock - net;
+    if (opening > 0) movements.push({ id: "mv_" + (++mvSeq), at: iso(45), productId: p.id, variantId: v.id, name: p.name, optionText: Object.values(v.options).join(" / "), sku: v.sku, delta: opening, after: opening, type: "initial", ref: "", note: "期初庫存" });
+    v._run = opening;
+  }));
+  events.forEach(e => {
+    const p = products.find(x => x.variants.some(v => v.id === e.variantId)), v = p.variants.find(x => x.id === e.variantId);
+    v._run += e.delta;
+    movements.push({ id: "mv_" + (++mvSeq), at: e.at, productId: p.id, variantId: v.id, name: p.name, optionText: Object.values(v.options).join(" / "), sku: v.sku, delta: e.delta, after: v._run, type: e.type, ref: e.ref, note: e.note });
+  });
+  products.forEach(p => p.variants.forEach(v => { delete v._run; }));
+  movements.sort((a, b) => a.at.localeCompare(b.at));
+
   // 行銷：日期用「今天往前／往後幾天」，範例資料永遠在有效期間內
   const ymd = offset => {
     const d = new Date(now + offset * day);
@@ -158,7 +210,7 @@ window.makeSeed = function () {
   ];
 
   return {
-    version: 5,
+    version: 6,
     sessions: {},
     cartCoupon: "",
     currentStoreId: "demo",
@@ -191,7 +243,7 @@ window.makeSeed = function () {
           { id: "c_wear", name: "服飾配件" },
           { id: "c_scent", name: "香氛" },
         ],
-        products, customers, orders, coupons, promotions,
+        products, customers, orders, coupons, promotions, suppliers, purchases, movements,
         memberTiers: {
           enabled: true, period: "all",
           tiers: [
@@ -200,7 +252,7 @@ window.makeSeed = function () {
             { id: "tier_gold", name: "金卡", minSpend: 10000, percent: 90, freeShip: true },
           ],
         },
-        counters: { order: 5 },
+        counters: { order: 5, purchase: 4 },
       },
     },
     cart: [],
