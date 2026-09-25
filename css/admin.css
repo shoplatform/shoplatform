@@ -94,6 +94,8 @@ a.kpi:hover { border-color: var(--accent); }
 .method-row:last-child { border-bottom: 0; }
 
 .modal.is-wide { max-width: 460px; }
+.tier-row { display: grid; grid-template-columns: auto 1fr auto 1fr auto; gap: 8px; align-items: center; }
+.tier-row input { min-width: 0; }
 .radio-list { display: grid; gap: 6px; }
 [hidden] { display: none !important; }
 

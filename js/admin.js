@@ -37,10 +37,13 @@
             <div class="sep">商品</div>
             ${link("admin/products", "products", "商品")}
             ${link("admin/categories", "categories", "分類")}
+            <div class="sep">行銷</div>
+            ${link("admin/coupons", "coupons", "優惠券")}
+            ${link("admin/promotions", "promotions", "滿額活動")}
             <div class="sep">商店</div>
             ${link("admin/settings", "settings", "設定")}
           </nav>
-          <div class="side-foot">骨架版 v0.3 · 金流未串接</div>
+          <div class="side-foot">骨架版 v0.4 · 金流未串接</div>
         </aside>
         <main class="main" id="main">${content}</main>
       </div>`;
@@ -495,14 +498,14 @@
         { header: "取貨方式", width: 11 }, { header: "取貨門市", width: 12 }, { header: "收件地址", width: 30 },
         { header: "物流單號", width: 15 }, { header: "商品件數", width: 9, type: "number" },
         { header: "商品小計", width: 10, type: "number" }, { header: "運費", width: 8, type: "number" },
-        { header: "折扣", width: 8, type: "number" }, { header: "訂單總額", width: 11, type: "number" },
+        { header: "折扣", width: 8, type: "number" }, { header: "優惠碼", width: 12 }, { header: "訂單總額", width: 11, type: "number" },
         { header: "備註", width: 30 },
       ],
       rows: chronological.map(o => [
         o.number, o.createdAt, DB.orders.STATUS[o.status], pay(o), o.payment.methodName,
         o.contact.name, o.contact.phone, o.contact.email, o.shipping.methodName, o.shipping.storeName,
         o.shipping.address, o.shipping.trackingNo, o.items.reduce((s, it) => s + it.qty, 0),
-        o.subtotal, o.shippingFee, o.discount || 0, o.total, o.note,
+        o.subtotal, o.shippingFee, o.discount || 0, o.couponCode || "", o.total, o.note,
       ]),
     };
     const itemSheet = {
@@ -554,6 +557,7 @@
                 <td class="r num">${money(it.price)}</td><td class="r num">${it.qty}</td><td class="r num">${money(it.price * it.qty)}</td>
               </tr>`).join("")}
               <tr><td colspan="4" class="r muted">商品小計</td><td class="r num">${money(o.subtotal)}</td></tr>
+              ${(o.discounts || []).map(d => `<tr><td colspan="4" class="r muted">${esc(d.label)}</td><td class="r num">${d.amount ? "−" + money(d.amount) : "免運"}</td></tr>`).join("")}
               <tr><td colspan="4" class="r muted">運費</td><td class="r num">${o.shippingFee ? money(o.shippingFee) : "免運"}</td></tr>
               <tr><td colspan="4" class="r"><b>總計</b></td><td class="r num"><b>${money(o.total)}</b></td></tr>
               </tbody></table></div>
@@ -746,6 +750,200 @@
     });
   }
 
+  /* ---------- 行銷：共用 ---------- */
+  const PERIOD_PILL = { active: ["ok", "進行中"], scheduled: ["info", "尚未開始"], expired: ["idle", "已結束"], off: ["idle", "已停用"] };
+  const periodPill = s => `<span class="pill ${PERIOD_PILL[s][0]}">${PERIOD_PILL[s][1]}</span>`;
+  const periodText = x => !x.startAt && !x.endAt ? "不限期間" : `${x.startAt ? x.startAt.replace(/-/g, "/") : "即日起"} – ${x.endAt ? x.endAt.replace(/-/g, "/") : "不限"}`;
+  const periodFields = (x, prefix) => `
+    <div class="field"><label for="${prefix}-start">開始日期</label><input type="date" id="${prefix}-start" value="${esc(x.startAt || "")}"><span class="hint">空白代表立即開始</span></div>
+    <div class="field"><label for="${prefix}-end">結束日期</label><input type="date" id="${prefix}-end" value="${esc(x.endAt || "")}"><span class="hint">空白代表不限；當天結束前都有效</span></div>`;
+
+  /* ---------- 優惠券 ---------- */
+  function viewCoupons() {
+    const list = DB.coupons.list();
+    shell("coupons", `
+      <div class="page-head"><h1>優惠券</h1><div class="actions"><a class="btn btn-primary" href="#admin/coupon/new">新增優惠券</a></div></div>
+      <section class="panel">
+        ${list.length ? `<div class="table-wrap"><table class="tbl">
+          <thead><tr><th>優惠碼</th><th>名稱</th><th>內容</th><th>期間</th><th class="r">已使用</th><th>狀態</th></tr></thead>
+          <tbody>${list.map(c => `<tr class="is-link" data-href="admin/coupon/${c.id}">
+            <td class="mono">${esc(c.code)}</td>
+            <td>${esc(c.name)}${c.membersOnly ? ` <span class="pill info">限會員</span>` : ""}</td>
+            <td>${esc(DB.coupons.describe(c))}</td>
+            <td class="num small">${esc(periodText(c))}</td>
+            <td class="r num">${c.used}${c.usageLimit ? ` / ${c.usageLimit}` : ""}</td>
+            <td>${periodPill(c.state)}</td>
+          </tr>`).join("")}</tbody></table></div>` : `<div class="empty">還沒有優惠券</div>`}
+      </section>
+      <p class="small muted" style="margin:0">「已使用」只算沒有取消的訂單；訂單取消後，優惠券次數會自動退回。</p>`);
+  }
+
+  function viewCouponEdit(id) {
+    const isNew = id === "new";
+    const c = isNew
+      ? { code: "", name: "", type: "amount", value: 100, maxDiscount: 0, minSpend: 0, startAt: "", endAt: "", usageLimit: 0, perCustomer: 1, membersOnly: false, stackable: true, enabled: true, used: 0 }
+      : DB.coupons.get(id);
+    if (!c) return notFound("找不到這張優惠券", "admin/coupons");
+    shell("coupons", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/coupons">優惠券</a><span>/</span><span>${isNew ? "新增優惠券" : esc(c.code)}</span></div>
+        <div class="actions">${isNew ? "" : `<button class="btn" id="cp-del">刪除</button>`}<button class="btn btn-primary" id="cp-save">儲存</button></div>
+      </div>
+      <div class="grid-2">
+        <div style="display:grid;gap:16px">
+          <section class="panel">
+            <div class="panel-head"><h2>基本資料</h2>${isNew ? "" : periodPill(c.state)}</div>
+            <div class="panel-body grid-form">
+              <div class="field"><label for="cp-code">優惠碼</label><input type="text" id="cp-code" value="${esc(c.code)}" maxlength="20" style="text-transform:uppercase;font-family:var(--mono)" placeholder="例如 WELCOME100"><span class="hint">顧客結帳時輸入，英文字母或數字 3～20 個</span></div>
+              <div class="field"><label for="cp-name">名稱</label><input type="text" id="cp-name" value="${esc(c.name)}" maxlength="30" placeholder="例如 新客折 100"><span class="hint">顧客和訂單上會看到</span></div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>優惠內容</h2></div>
+            <div class="panel-body">
+              <div class="radio-list">
+                ${Object.entries(DB.coupons.TYPES).map(([k, label]) => `<label class="check"><input type="radio" name="cp-type" value="${k}" id="cp-type-${k}" ${c.type === k ? "checked" : ""}> ${label}</label>`).join("")}
+              </div>
+              <div class="grid-form">
+                <div class="field" id="cp-value-f"><label for="cp-value" id="cp-value-l"></label><input type="number" id="cp-value" min="0" step="1" value="${c.value}"><span class="hint" id="cp-value-h"></span></div>
+                <div class="field" id="cp-max-f"><label for="cp-max">最多折抵（NT$）</label><input type="number" id="cp-max" min="0" step="1" value="${c.maxDiscount}"><span class="hint">0 代表不設上限</span></div>
+                <div class="field"><label for="cp-min">使用門檻（NT$）</label><input type="number" id="cp-min" min="0" step="1" value="${c.minSpend}"><span class="hint">商品金額滿多少才能用，0 代表不限</span></div>
+              </div>
+              <p class="small" id="cp-preview" style="margin:0"></p>
+            </div>
+          </section>
+        </div>
+        <div style="display:grid;gap:16px">
+          <section class="panel">
+            <div class="panel-head"><h2>期間與狀態</h2></div>
+            <div class="panel-body">
+              ${periodFields(c, "cp")}
+              <label class="check"><input type="checkbox" id="cp-on" ${c.enabled ? "checked" : ""}> 啟用</label>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>使用限制</h2></div>
+            <div class="panel-body">
+              <div class="field"><label for="cp-limit">總共可用幾次</label><input type="number" id="cp-limit" min="0" step="1" value="${c.usageLimit}"><span class="hint">0 代表不限；目前已用 ${c.used || 0} 次</span></div>
+              <div class="field"><label for="cp-per">每位顧客可用幾次</label><input type="number" id="cp-per" min="0" step="1" value="${c.perCustomer}"><span class="hint">用會員帳號或下單手機計算，0 代表不限</span></div>
+              <label class="check"><input type="checkbox" id="cp-members" ${c.membersOnly ? "checked" : ""}> 限登入會員使用</label>
+              <label class="check"><input type="checkbox" id="cp-stack" ${c.stackable ? "checked" : ""}> 可以和滿額活動一起用</label>
+            </div>
+          </section>
+        </div>
+      </div>`);
+
+    const val = () => ({
+      id: c.id, code: document.getElementById("cp-code").value, name: document.getElementById("cp-name").value,
+      type: (root().querySelector('input[name="cp-type"]:checked') || {}).value,
+      value: +document.getElementById("cp-value").value, maxDiscount: +document.getElementById("cp-max").value,
+      minSpend: +document.getElementById("cp-min").value,
+      startAt: document.getElementById("cp-start").value, endAt: document.getElementById("cp-end").value,
+      usageLimit: +document.getElementById("cp-limit").value, perCustomer: +document.getElementById("cp-per").value,
+      membersOnly: document.getElementById("cp-members").checked, stackable: document.getElementById("cp-stack").checked,
+      enabled: document.getElementById("cp-on").checked,
+    });
+    function drawType() {
+      const t = val().type;
+      document.getElementById("cp-value-f").hidden = t === "freeship";
+      document.getElementById("cp-max-f").hidden = t !== "percent";
+      document.getElementById("cp-value-l").textContent = t === "percent" ? "打幾折" : "折抵金額（NT$）";
+      document.getElementById("cp-value-h").textContent = t === "percent" ? "85 代表 85 折；9 折請填 90" : "";
+      const v = val();
+      document.getElementById("cp-preview").innerHTML = `顧客會看到：<b>${esc(DB.coupons.describe(v))}</b>`;
+    }
+    drawType();
+    root().querySelector(".main").addEventListener("input", drawType);
+    root().querySelector(".main").addEventListener("change", drawType);
+    document.getElementById("cp-save").addEventListener("click", () => {
+      try { const s = DB.coupons.save(val()); toast("已儲存優惠券"); Router.go("admin/coupon/" + s.id); }
+      catch (err) { toast(err.message, "error"); }
+    });
+    const del = document.getElementById("cp-del");
+    if (del) del.addEventListener("click", async () => {
+      if (await confirmBox({ title: `刪除優惠碼 ${c.code}？`, body: "已經用過的訂單折扣不受影響，但顧客之後就不能再用這個碼。", ok: "刪除", danger: true })) {
+        DB.coupons.remove(c.id); toast("已刪除"); Router.go("admin/coupons");
+      }
+    });
+  }
+
+  /* ---------- 滿額活動 ---------- */
+  function viewPromotions() {
+    const list = DB.promotions.list();
+    shell("promotions", `
+      <div class="page-head"><h1>滿額活動</h1><div class="actions"><a class="btn btn-primary" href="#admin/promotion/new">新增活動</a></div></div>
+      <section class="panel">
+        ${list.length ? `<div class="table-wrap"><table class="tbl">
+          <thead><tr><th>活動名稱</th><th>內容</th><th>期間</th><th>狀態</th></tr></thead>
+          <tbody>${list.map(p => `<tr class="is-link" data-href="admin/promotion/${p.id}">
+            <td>${esc(p.name)}</td><td>${esc(DB.promotions.describe(p))}</td>
+            <td class="num small">${esc(periodText(p))}</td><td>${periodPill(p.state)}</td>
+          </tr>`).join("")}</tbody></table></div>` : `<div class="empty">還沒有滿額活動</div>`}
+      </section>
+      <p class="small muted" style="margin:0">結帳時會自動套用。同時有好幾個活動進行中時，系統會幫顧客挑折最多的那一段。</p>`);
+  }
+
+  function viewPromotionEdit(id) {
+    const isNew = id === "new";
+    const p = isNew ? { name: "", tiers: [{ min: 1500, off: 150 }], startAt: "", endAt: "", enabled: true } : DB.promotions.get(id);
+    if (!p) return notFound("找不到這個活動", "admin/promotions");
+    const tiers = p.tiers.map(t => ({ ...t }));
+    shell("promotions", `
+      <div class="page-head">
+        <div class="crumbs"><a href="#admin/promotions">滿額活動</a><span>/</span><span>${isNew ? "新增活動" : esc(p.name)}</span></div>
+        <div class="actions">${isNew ? "" : `<button class="btn" id="pm-del">刪除</button>`}<button class="btn btn-primary" id="pm-save">儲存</button></div>
+      </div>
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>活動內容</h2>${isNew ? "" : periodPill(p.state)}</div>
+          <div class="panel-body">
+            <div class="field"><label for="pm-name">活動名稱</label><input type="text" id="pm-name" value="${esc(p.name)}" maxlength="30" placeholder="例如 秋季滿額折"><span class="hint">顧客在購物車和訂單上會看到</span></div>
+            <div class="label">滿額門檻</div>
+            <div id="pm-tiers" style="display:grid;gap:8px"></div>
+            <div><button class="btn btn-sm" type="button" id="pm-add">新增一段</button></div>
+            <p class="small muted" style="margin:0">例如「滿 1500 折 150」「滿 3000 折 400」，買到 3200 就折 400，不會兩段疊加。門檻看的是商品原價小計。</p>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>期間與狀態</h2></div>
+          <div class="panel-body">
+            ${periodFields(p, "pm")}
+            <label class="check"><input type="checkbox" id="pm-on" ${p.enabled ? "checked" : ""}> 啟用</label>
+          </div>
+        </section>
+      </div>`);
+    const box = document.getElementById("pm-tiers");
+    const draw = () => {
+      box.innerHTML = tiers.map((t, i) => `<div class="tier-row">
+        <span>滿</span><input type="number" min="0" step="1" data-i="${i}" data-k="min" id="pm-min-${i}" value="${t.min}" aria-label="門檻金額">
+        <span>折</span><input type="number" min="0" step="1" data-i="${i}" data-k="off" id="pm-off-${i}" value="${t.off}" aria-label="折抵金額">
+        <button class="btn btn-sm btn-ghost" type="button" data-del="${i}" ${tiers.length === 1 ? "disabled" : ""}>移除</button>
+      </div>`).join("");
+    };
+    draw();
+    box.addEventListener("input", e => { const el = e.target.closest("[data-k]"); if (el) tiers[+el.dataset.i][el.dataset.k] = +el.value; });
+    box.addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (b && tiers.length > 1) { tiers.splice(+b.dataset.del, 1); draw(); } });
+    document.getElementById("pm-add").addEventListener("click", () => {
+      if (tiers.length >= 5) return toast("最多 5 段", "error");
+      const last = tiers[tiers.length - 1] || { min: 0, off: 0 };
+      tiers.push({ min: last.min * 2 || 1000, off: last.off * 2 || 100 }); draw();
+    });
+    document.getElementById("pm-save").addEventListener("click", () => {
+      try {
+        const s = DB.promotions.save({ id: p.id, name: document.getElementById("pm-name").value, tiers,
+          startAt: document.getElementById("pm-start").value, endAt: document.getElementById("pm-end").value,
+          enabled: document.getElementById("pm-on").checked });
+        toast("已儲存活動"); Router.go("admin/promotion/" + s.id);
+      } catch (err) { toast(err.message, "error"); }
+    });
+    const del = document.getElementById("pm-del");
+    if (del) del.addEventListener("click", async () => {
+      if (await confirmBox({ title: `刪除「${p.name}」？`, body: "已成立訂單的折扣不受影響。", ok: "刪除", danger: true })) {
+        DB.promotions.remove(p.id); toast("已刪除"); Router.go("admin/promotions");
+      }
+    });
+  }
+
   function notFound(msg, back) {
     shell("", `<div class="panel"><div class="empty">${esc(msg)}<div style="margin-top:12px"><a class="btn" href="#${back}">返回</a></div></div></div>`);
   }
@@ -769,6 +967,10 @@
       case "customers": return viewCustomers();
       case "customer": return viewCustomer(arg);
       case "settings": return viewSettings();
+      case "coupons": return viewCoupons();
+      case "coupon": return viewCouponEdit(arg);
+      case "promotions": return viewPromotions();
+      case "promotion": return viewPromotionEdit(arg);
       default: return notFound("找不到這個頁面", "admin");
     }
   };

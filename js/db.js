@@ -34,7 +34,16 @@
       const u1 = s.stores.demo.customers.find(c => c.id === "u_1" && c.phone === "0912345678");
       if (u1 && !u1.auth) { u1.auth = window.DEMO_AUTH; u1.registeredAt = u1.createdAt; }
     }
-    s.version = 3;
+    // v3 → v4：加上優惠券、滿額活動；示範店補上範例活動
+    if ((s.version || 1) < 4) {
+      const demo = window.makeSeed().stores.demo;
+      Object.values(s.stores).forEach(store => {
+        if (!store.coupons) store.coupons = store.id === "demo" ? demo.coupons : [];
+        if (!store.promotions) store.promotions = store.id === "demo" ? demo.promotions : [];
+      });
+      if (s.cartCoupon === undefined) s.cartCoupon = "";
+    }
+    s.version = 4;
     return s;
   }
 
@@ -369,18 +378,175 @@
       if (qty <= 0) state.cart = state.cart.filter(x => x !== line); else line.qty = qty;
       commit();
     },
-    clear() { state.cart = []; commit(); },
+    clear() { state.cart = []; state.cartCoupon = ""; commit(); },
+    /* 優惠碼跟著購物車走：購物車輸入、結帳頁還在 */
+    coupon: () => state.cartCoupon || "",
+    applyCoupon(code, phone) {
+      code = normCode(code);
+      if (!code) throw new Error("請輸入優惠碼");
+      const q = quote(cart.items(), null, { couponCode: code, phone });
+      if (q.couponError) throw new Error(q.couponError);
+      state.cartCoupon = code; commit();
+      return q;
+    },
+    removeCoupon() { state.cartCoupon = ""; commit(); },
   };
 
-  /* ---------- 運費計算 ---------- */
-  function quote(items, shippingMethodId) {
+  /* ---------- 行銷：優惠券、滿額活動 ----------
+   * 優惠券種類：amount（折固定金額）、percent（打折，value=85 代表 85 折）、freeship（免運）
+   * 滿額活動：多段門檻，例如 滿 1500 折 150、滿 3000 折 400，自動套用最划算的一段
+   * 日期是 "YYYY-MM-DD"（台灣時間），空白代表不限；兩端都包含
+   */
+  const pad2 = n => String(n).padStart(2, "0");
+  const todayYmd = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+  const inPeriod = x => { const t = todayYmd(); return (!x.startAt || t >= x.startAt) && (!x.endAt || t <= x.endAt); };
+  const periodState = x => {
+    const t = todayYmd();
+    if (!x.enabled) return "off";
+    if (x.startAt && t < x.startAt) return "scheduled";
+    if (x.endAt && t > x.endAt) return "expired";
+    return "active";
+  };
+  const money0 = n => "NT$" + Math.round(n).toLocaleString("zh-TW");
+  const normCode = c => String(c || "").trim().toUpperCase();
+
+  function couponUsage(c, { customerId, phone } = {}) {
+    const valid = S().orders.filter(o => o.couponCode === c.code && o.status !== "cancelled");
+    const mine = valid.filter(o => (customerId && o.customerId === customerId) || (phone && o.contact.phone === phone));
+    return { used: valid.length, mine: mine.length };
+  }
+  function checkDate(x, what) {
+    const s = periodState(x);
+    if (s === "off") throw new Error(`這個${what}目前沒有開放`);
+    if (s === "scheduled") throw new Error(`這個${what} ${x.startAt} 才開始`);
+    if (s === "expired") throw new Error(`這個${what}已經在 ${x.endAt} 結束`);
+  }
+
+  const coupons = {
+    TYPES: { amount: "折抵金額", percent: "打折", freeship: "免運" },
+    list() {
+      return clone(S().coupons).map(c => Object.assign(c, { state: periodState(c), used: couponUsage(c).used }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    get: id => { const c = S().coupons.find(x => x.id === id); return c ? Object.assign(clone(c), { state: periodState(c), used: couponUsage(c).used }) : null; },
+    describe(c) { // 給人看的一句話：「滿 NT$800 折 NT$100」
+      const head = c.minSpend > 0 ? `滿 ${money0(c.minSpend)} ` : "";
+      if (c.type === "amount") return `${head}折 ${money0(c.value)}`;
+      if (c.type === "percent") return `${head}打 ${c.value % 10 === 0 ? c.value / 10 : c.value} 折${c.maxDiscount > 0 ? `（最多折 ${money0(c.maxDiscount)}）` : ""}`;
+      return `${head}免運費`;
+    },
+    save(input) {
+      const d = clone(input);
+      d.code = normCode(d.code);
+      d.name = String(d.name || "").trim();
+      if (!/^[A-Z0-9]{3,20}$/.test(d.code)) throw new Error("優惠碼要 3～20 個英文字母或數字");
+      if (S().coupons.some(c => c.code === d.code && c.id !== d.id)) throw new Error("已經有同樣的優惠碼");
+      if (!d.name) throw new Error("請填寫優惠券名稱");
+      if (!coupons.TYPES[d.type]) throw new Error("請選擇優惠方式");
+      ["value", "maxDiscount", "minSpend", "usageLimit", "perCustomer"].forEach(k => { d[k] = Math.max(0, Math.floor(+d[k] || 0)); });
+      if (d.type === "amount" && d.value <= 0) throw new Error("折抵金額要大於 0");
+      if (d.type === "percent" && !(d.value >= 1 && d.value <= 99)) throw new Error("折數請填 1～99，例如 85 代表 85 折、9 折請填 90");
+      if (d.type !== "percent") d.maxDiscount = 0;
+      if (d.type === "freeship") d.value = 0;
+      if (d.startAt && d.endAt && d.startAt > d.endAt) throw new Error("結束日期不能早於開始日期");
+      d.membersOnly = !!d.membersOnly; d.stackable = !!d.stackable; d.enabled = !!d.enabled;
+      if (!d.id) { Object.assign(d, { id: uid("cp"), usedCount: 0, createdAt: new Date().toISOString() }); S().coupons.push(d); }
+      else { const i = S().coupons.findIndex(x => x.id === d.id); S().coupons[i] = Object.assign({}, S().coupons[i], d); }
+      commit(); return clone(d);
+    },
+    remove(id) { S().coupons = S().coupons.filter(c => c.id !== id); commit(); },
+  };
+
+  const promotions = {
+    list() {
+      return clone(S().promotions).map(p => Object.assign(p, { state: periodState(p) }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    get: id => { const p = S().promotions.find(x => x.id === id); return p ? Object.assign(clone(p), { state: periodState(p) }) : null; },
+    describe: p => p.tiers.map(t => `滿 ${money0(t.min)} 折 ${money0(t.off)}`).join("、"),
+    active: () => clone(S().promotions.filter(p => periodState(p) === "active")),
+    save(input) {
+      const d = clone(input);
+      d.name = String(d.name || "").trim();
+      if (!d.name) throw new Error("請填寫活動名稱");
+      d.tiers = (d.tiers || []).map(t => ({ min: Math.max(0, Math.floor(+t.min || 0)), off: Math.max(0, Math.floor(+t.off || 0)) }))
+        .filter(t => t.min > 0 && t.off > 0).sort((a, b) => a.min - b.min);
+      if (!d.tiers.length) throw new Error("至少要有一段「滿多少折多少」");
+      if (d.tiers.some(t => t.off >= t.min)) throw new Error("折抵金額要小於門檻金額");
+      if (new Set(d.tiers.map(t => t.min)).size !== d.tiers.length) throw new Error("門檻金額不能重複");
+      if (d.startAt && d.endAt && d.startAt > d.endAt) throw new Error("結束日期不能早於開始日期");
+      d.enabled = !!d.enabled;
+      if (!d.id) { Object.assign(d, { id: uid("pm"), createdAt: new Date().toISOString() }); S().promotions.push(d); }
+      else { const i = S().promotions.findIndex(x => x.id === d.id); S().promotions[i] = Object.assign({}, S().promotions[i], d); }
+      commit(); return clone(d);
+    },
+    remove(id) { S().promotions = S().promotions.filter(p => p.id !== id); commit(); },
+  };
+
+  /* 檢查優惠碼能不能用在這張單上；不能用就丟出原因 */
+  function evalCoupon(code, { subtotal, afterPromo, promoApplied, customerId, phone }) {
+    const c = S().coupons.find(x => x.code === normCode(code));
+    if (!c) throw new Error("沒有這個優惠碼");
+    checkDate(c, "優惠碼");
+    if (c.membersOnly && !customerId) throw new Error("這個優惠碼限會員使用，請先登入");
+    if (c.usageLimit > 0 && couponUsage(c).used >= c.usageLimit) throw new Error("這個優惠碼已經被用完了");
+    if (c.perCustomer > 0 && (customerId || phone) && couponUsage(c, { customerId, phone }).mine >= c.perCustomer) {
+      throw new Error(c.perCustomer === 1 ? "這個優惠碼每人限用一次，你已經用過了" : `這個優惠碼每人限用 ${c.perCustomer} 次，你已經用完了`);
+    }
+    if (subtotal < c.minSpend) throw new Error(`商品滿 ${money0(c.minSpend)} 才能用，還差 ${money0(c.minSpend - subtotal)}`);
+    if (!c.stackable && promoApplied) throw new Error("這個優惠碼不能和滿額活動一起使用");
+    let amount = 0;
+    if (c.type === "amount") amount = Math.min(c.value, afterPromo);
+    if (c.type === "percent") {
+      amount = Math.floor(afterPromo * (100 - c.value) / 100);
+      if (c.maxDiscount > 0) amount = Math.min(amount, c.maxDiscount);
+    }
+    return { code: c.code, name: c.name, amount, freeShip: c.type === "freeship" };
+  }
+
+  /* ---------- 金額計算：商品小計 → 滿額折 → 優惠碼 → 運費 ----------
+   * opts.couponCode：要套用的優惠碼（空白代表不用）
+   * opts.customerId / opts.phone：用來檢查會員限定、每人限用次數
+   * 免運門檻看「折扣後」的商品金額
+   */
+  function quote(items, shippingMethodId, opts = {}) {
     const st = S().settings;
     const subtotal = items.reduce((s, it) => s + it.price * it.qty, 0);
+
+    // 滿額活動：所有進行中的活動裡，挑折最多的一段
+    let promo = null, nextTier = null;
+    S().promotions.filter(p => periodState(p) === "active").forEach(p => p.tiers.forEach(t => {
+      if (subtotal >= t.min && (!promo || t.off > promo.amount)) promo = { id: p.id, name: p.name, amount: t.off, min: t.min };
+      if (subtotal < t.min && t.off > (promo ? promo.amount : 0) && (!nextTier || t.min < nextTier.min)) nextTier = { name: p.name, min: t.min, off: t.off };
+    }));
+    if (nextTier && promo && nextTier.off <= promo.amount) nextTier = null;
+    const promoAmt = promo ? promo.amount : 0;
+    const afterPromo = subtotal - promoAmt;
+
+    let coupon = null, couponError = "";
+    const me_ = me();
+    const customerId = opts.customerId || (me_ ? me_.id : "");
+    if (opts.couponCode) {
+      try { coupon = evalCoupon(opts.couponCode, { subtotal, afterPromo, promoApplied: !!promo, customerId, phone: opts.phone || (me_ ? me_.phone : "") }); }
+      catch (e) { couponError = e.message; }
+    }
+    const couponAmt = coupon ? coupon.amount : 0;
+    const discount = promoAmt + couponAmt;
+    const goods = subtotal - discount;
+
     const method = st.shippingMethods.find(m => m.id === shippingMethodId);
-    const free = st.freeShippingThreshold > 0 && subtotal >= st.freeShippingThreshold;
+    const freeByThreshold = st.freeShippingThreshold > 0 && goods >= st.freeShippingThreshold;
+    const free = freeByThreshold || !!(coupon && coupon.freeShip);
     const shippingFee = !method || free ? 0 : method.fee;
-    return { subtotal, shippingFee, discount: 0, total: subtotal + shippingFee,
-      freeGap: free ? 0 : Math.max(0, st.freeShippingThreshold - subtotal) };
+    const discounts = [];
+    if (promo) discounts.push({ kind: "promo", label: `${promo.name}（滿 ${money0(promo.min)} 折 ${money0(promo.amount)}）`, amount: promoAmt });
+    if (coupon) discounts.push({ kind: "coupon", code: coupon.code, label: `優惠碼 ${coupon.code}・${coupon.name}`, amount: couponAmt, freeShip: coupon.freeShip });
+    return {
+      subtotal, promo, nextTier: nextTier && { ...nextTier, gap: nextTier.min - subtotal },
+      coupon, couponError, discounts, discount, goods, shippingFee, total: goods + shippingFee,
+      freeShipByCoupon: !!(coupon && coupon.freeShip),
+      freeGap: free ? 0 : Math.max(0, st.freeShippingThreshold - goods),
+    };
   }
 
   /* ---------- 訂單 ---------- */
@@ -424,13 +590,16 @@
         const v = S().products.find(p => p.id === l.productId).variants.find(x => x.id === l.variantId);
         if (v.stock < l.qty) throw new Error(`「${l.name}」庫存不足，只剩 ${v.stock} 件`);
       }
+      // 金額（含優惠）在扣庫存之前算好：優惠碼不能用就整張單不成立
+      const couponCode = state.cartCoupon || "";
+      const q = quote(lines, ship.id, { couponCode, phone: contact.phone });
+      if (q.couponError) throw new Error(`優惠碼 ${couponCode}：${q.couponError}（可以先移除優惠碼再結帳）`);
       // 扣庫存
       for (const l of lines) {
         S().products.find(p => p.id === l.productId).variants.find(x => x.id === l.variantId).stock -= l.qty;
       }
       // 已登入就掛在自己的帳號下；沒登入就用手機找（或建立）會員
       const c = me() || customers.upsert(contact);
-      const q = quote(lines, ship.id);
       S().counters.order += 1;
       const now = new Date().toISOString();
       const o = {
@@ -442,7 +611,8 @@
           const v = S().products.find(p => p.id === l.productId).variants.find(x => x.id === l.variantId);
           return { productId: l.productId, variantId: l.variantId, name: l.name, optionText: l.optionText, sku: v.sku, price: l.price, qty: l.qty };
         }),
-        subtotal: q.subtotal, shippingFee: q.shippingFee, discount: 0, total: q.total,
+        subtotal: q.subtotal, shippingFee: q.shippingFee, discount: q.discount, total: q.total,
+        discounts: q.discounts, couponCode: q.coupon ? q.coupon.code : "",
         shipping: { methodId: ship.id, methodName: ship.name, address: shipping.address || "", storeName: shipping.storeName || "", trackingNo: "" },
         // 金流尚未串接：一律先記為未付款，由商家在後台手動確認
         payment: { methodId: pay.id, methodName: pay.name, status: "unpaid" },
@@ -455,6 +625,7 @@
       S().orders.push(o);
       guestPass[o.number] = true; // 剛下單的人可以直接看這筆訂單
       state.cart = [];
+      state.cartCoupon = "";
       commit();
       return clone(o);
     },
@@ -576,7 +747,7 @@
   }
 
   window.DB = {
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

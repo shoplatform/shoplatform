@@ -133,9 +133,34 @@ window.makeSeed = function () {
   ];
   orders[1].shipping.trackingNo = "F12345678901";
 
+  // 行銷：日期用「今天往前／往後幾天」，範例資料永遠在有效期間內
+  const ymd = offset => {
+    const d = new Date(now + offset * day);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const coupons = [
+    { id: "cp_welcome", code: "WELCOME100", name: "新客折 100", type: "amount", value: 100, maxDiscount: 0,
+      minSpend: 800, startAt: "", endAt: "", usageLimit: 0, perCustomer: 1, membersOnly: false, stackable: true,
+      enabled: true, usedCount: 0, createdAt: iso(30) },
+    { id: "cp_autumn", code: "AUTUMN85", name: "秋季 85 折", type: "percent", value: 85, maxDiscount: 300,
+      minSpend: 1000, startAt: ymd(-10), endAt: ymd(20), usageLimit: 100, perCustomer: 0, membersOnly: false, stackable: false,
+      enabled: true, usedCount: 0, createdAt: iso(10) },
+    { id: "cp_freeship", code: "FREESHIP", name: "會員免運券", type: "freeship", value: 0, maxDiscount: 0,
+      minSpend: 500, startAt: "", endAt: "", usageLimit: 0, perCustomer: 0, membersOnly: true, stackable: true,
+      enabled: true, usedCount: 0, createdAt: iso(8) },
+    { id: "cp_summer", code: "SUMMER50", name: "夏日折 50（已過期）", type: "amount", value: 50, maxDiscount: 0,
+      minSpend: 500, startAt: ymd(-60), endAt: ymd(-5), usageLimit: 0, perCustomer: 0, membersOnly: false, stackable: true,
+      enabled: true, usedCount: 0, createdAt: iso(60) },
+  ];
+  const promotions = [
+    { id: "pm_autumn", name: "秋季滿額折", tiers: [{ min: 1500, off: 150 }, { min: 3000, off: 400 }],
+      startAt: ymd(-10), endAt: ymd(20), enabled: true, createdAt: iso(10) },
+  ];
+
   return {
-    version: 3,
+    version: 4,
     sessions: {},
+    cartCoupon: "",
     currentStoreId: "demo",
     stores: {
       demo: {
@@ -166,7 +191,7 @@ window.makeSeed = function () {
           { id: "c_wear", name: "服飾配件" },
           { id: "c_scent", name: "香氛" },
         ],
-        products, customers, orders,
+        products, customers, orders, coupons, promotions,
         counters: { order: 5 },
       },
     },

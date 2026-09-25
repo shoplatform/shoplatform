@@ -101,6 +101,25 @@
 .s-radio .fee { margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--s-muted); }
 .s-done { text-align: center; padding-block: 60px; display: grid; gap: 14px; justify-items: center; }
 .s-done .no { font-family: var(--mono); font-size: 22px; letter-spacing: .06em; }
+/* 折扣與優惠碼 */
+.s-bar-sep { margin-inline: 10px; color: var(--s-muted); }
+.s-disc { color: var(--s-accent); }
+.s-disc span:first-child { min-width: 0; }
+.s-coupon-in { display: flex; gap: 8px; }
+.s-coupon-in input { flex: 1; text-transform: uppercase; font-family: var(--mono); }
+.s-coupon-in input::placeholder { text-transform: none; font-family: var(--sans); }
+.s-coupon { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; border: 1px dashed var(--s-accent); border-radius: 4px; padding: 10px 12px; font-size: 13px; }
+.s-coupon span { color: var(--s-muted); }
+.s-coupon.is-bad { border-color: #b3261e; }
+.s-coupon-err { color: #b3261e; margin-top: 4px; }
+:root[data-theme="dark"] .s-coupon.is-bad { border-color: #f08a82; }
+:root[data-theme="dark"] .s-coupon-err { color: #f08a82; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .s-coupon.is-bad { border-color: #f08a82; }
+  :root:not([data-theme="light"]) .s-coupon-err { color: #f08a82; }
+}
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
 /* 會員與訂單查詢 */
 .s-nav { display: flex; gap: 14px; align-items: center; font-size: 14px; white-space: nowrap; }
 .s-nav a { color: var(--s-ink) !important; text-decoration: none; }

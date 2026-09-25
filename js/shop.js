@@ -22,13 +22,68 @@
       : `<div class="s-img ${cls}" style="background:${esc(p.color)}" aria-hidden="true">${esc(p.name.slice(0, 1))}</div>`;
   };
 
+  /* 最上方的公告列：進行中的滿額活動＋免運門檻 */
+  function barText(st) {
+    const parts = DB.promotions.active().map(p => `${esc(p.name)}：${esc(DB.promotions.describe(p))}`);
+    if (st.freeShippingThreshold > 0) parts.push(`全館滿 ${money(st.freeShippingThreshold)} 免運`);
+    return parts.join('<span class="s-bar-sep" aria-hidden="true">｜</span>');
+  }
+
+  /* 金額明細（購物車、結帳共用） */
+  function sumLines(q, withShipping) {
+    return `
+      <div><span>商品小計</span><span>${money(q.subtotal)}</span></div>
+      ${q.discounts.map(d => `<div class="s-disc"><span>${esc(d.label)}</span><span>${d.amount ? "−" + money(d.amount) : "免運"}</span></div>`).join("")}
+      ${withShipping ? `<div><span>運費</span><span>${q.shippingFee ? money(q.shippingFee) : "免運"}</span></div>
+      <div class="total"><span>總計</span><span>${money(q.total)}</span></div>`
+      : `<div><span>運費</span><span>${q.freeGap === 0 ? "免運" : "結帳時計算"}</span></div>
+      <div class="total"><span>目前金額</span><span>${money(q.goods)}</span></div>`}`;
+  }
+  /* 還差多少可以多折／免運 */
+  function nudges(q) {
+    const out = [];
+    if (q.nextTier) out.push(`再買 ${money(q.nextTier.gap)}，${esc(q.nextTier.name)}可以折 ${money(q.nextTier.off)}`);
+    if (q.freeGap > 0) out.push(`再買 ${money(q.freeGap)} 就免運`);
+    return out.map(t => `<div class="s-gap">${t}</div>`).join("");
+  }
+  /* 優惠碼輸入框；套用或移除後呼叫 redraw */
+  function couponBox(q, redraw, getPhone) {
+    const code = DB.cart.coupon();
+    const html = code ? `
+      <div class="s-coupon ${q.couponError ? "is-bad" : ""}">
+        <div><b class="mono">${esc(code)}</b>${q.coupon ? ` <span>${esc(q.coupon.name)}</span>` : ""}
+          ${q.couponError ? `<div class="s-coupon-err" role="alert">${esc(q.couponError)}</div>` : ""}</div>
+        <button type="button" class="btn btn-sm" id="cp-remove">移除</button>
+      </div>` : `
+      <div class="s-coupon-in">
+        <label class="sr-only" for="cp-code">優惠碼</label>
+        <input type="text" id="cp-code" placeholder="輸入優惠碼" autocomplete="off" autocapitalize="characters">
+        <button type="button" class="btn" id="cp-apply">套用</button>
+      </div>`;
+    const bind = () => {
+      const rm = document.getElementById("cp-remove");
+      if (rm) rm.addEventListener("click", () => { DB.cart.removeCoupon(); toast("已移除優惠碼"); redraw(); });
+      const ap = document.getElementById("cp-apply");
+      if (ap) {
+        const input = document.getElementById("cp-code");
+        const go = () => {
+          try { DB.cart.applyCoupon(input.value, getPhone ? getPhone() : ""); toast("已套用優惠碼"); redraw(); }
+          catch (err) { toast(err.message, "error"); input.focus(); }
+        };
+        ap.addEventListener("click", go);
+        input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+      }
+    };
+    return { html, bind };
+  }
+
   function shell(content) {
     const st = DB.settings.get();
     const n = DB.cart.count();
     const user = DB.auth.current();
     root().innerHTML = `
       <div class="shop">
-        ${st.freeShippingThreshold > 0 ? `<div class="s-bar">全館滿 ${money(st.freeShippingThreshold)} 免運</div>` : ""}
+        ${barText(st) ? `<div class="s-bar">${barText(st)}</div>` : ""}
         <header class="s-head"><div class="s-wrap">
           <a class="s-logo" href="#shop">${esc(st.name)}</a>
           <input type="search" class="s-search" id="s-q" placeholder="搜尋商品" value="${esc(query)}" aria-label="搜尋商品">
@@ -164,7 +219,8 @@
   /* ---------- 購物車 ---------- */
   function viewCart() {
     const items = DB.cart.items();
-    const q = DB.quote(items, null);
+    const q = DB.quote(items, null, { couponCode: DB.cart.coupon() });
+    const cb = couponBox(q, viewCart);
     shell(`
       <div class="s-wrap s-page">
         <h1>購物車</h1>
@@ -181,17 +237,16 @@
           </section>
           <aside class="s-box">
             <h2>訂單摘要</h2>
-            <div class="s-sum">
-              <div><span>商品小計</span><span>${money(q.subtotal)}</span></div>
-              <div><span>運費</span><span>${q.freeGap === 0 ? "免運" : "結帳時計算"}</span></div>
-            </div>
-            ${q.freeGap > 0 ? `<div class="s-gap">再買 ${money(q.freeGap)} 就免運</div>` : ""}
+            <div class="s-sum">${sumLines(q, false)}</div>
+            ${nudges(q)}
+            ${cb.html}
             <a class="btn btn-primary" href="#shop/checkout" style="padding:11px">前往結帳</a>
             <a href="#shop" class="small" style="text-align:center">繼續逛</a>
           </aside>
         </div>` : `<div class="s-box"><div class="empty">購物車是空的<div style="margin-top:12px"><a class="btn btn-primary" href="#shop">去逛逛</a></div></div></div>`}
       </div>`);
 
+    if (items.length) cb.bind();
     root().querySelectorAll(".s-qty button[data-v]").forEach(b => b.addEventListener("click", () => {
       const it = items.find(x => x.variantId === b.dataset.v);
       const n = it.qty + (+b.dataset.d);
@@ -276,21 +331,23 @@
         : `<div class="field"><label for="co-store">取貨門市</label><input type="text" id="co-store" value="${esc(form.storeName)}" placeholder="例如 中港門市"><span class="hint">超商門市地圖要等物流串接後才能選，先手動填寫。</span></div>`;
     }
     function drawSum() {
-      const q = DB.quote(items, form.ship);
+      const q = DB.quote(items, form.ship, { couponCode: DB.cart.coupon(), phone: form.phone });
+      const cb = couponBox(q, () => { readForm(); drawSum(); }, () => form.phone);
       document.getElementById("co-sum").innerHTML = `
         <h2>訂單內容</h2>
         ${items.map(it => `<div class="s-sum"><div><span>${esc(it.name)}${it.optionText ? `（${esc(it.optionText)}）` : ""} × ${it.qty}</span><span>${money(it.price * it.qty)}</span></div></div>`).join("")}
-        <div class="s-sum">
-          <div><span>商品小計</span><span>${money(q.subtotal)}</span></div>
-          <div><span>運費</span><span>${q.shippingFee ? money(q.shippingFee) : "免運"}</span></div>
-          <div class="total"><span>總計</span><span>${money(q.total)}</span></div>
-        </div>
+        <div class="s-sum">${sumLines(q, true)}</div>
+        ${nudges(q)}
+        ${cb.html}
         <button class="btn btn-primary" type="submit" style="padding:12px">送出訂單</button>`;
+      cb.bind();
     }
     drawExtra(); drawSum();
     f.addEventListener("change", e => {
+      if (e.target.id === "cp-code") return; // 優惠碼按「套用」才生效
       readForm();
-      if (e.target.name === "co-ship") { drawExtra(); drawSum(); }
+      if (e.target.name === "co-ship") drawExtra();
+      if (e.target.name === "co-ship" || e.target.id === "co-phone") drawSum();
     });
     f.addEventListener("submit", e => {
       e.preventDefault();
@@ -552,6 +609,7 @@
             ${o.items.map(it => `<div class="s-sum"><div><span>${esc(it.name)}${it.optionText ? `（${esc(it.optionText)}）` : ""} × ${it.qty}</span><span>${money(it.price * it.qty)}</span></div></div>`).join("")}
             <div class="s-sum">
               <div><span>商品小計</span><span>${money(o.subtotal)}</span></div>
+              ${(o.discounts || []).map(d => `<div class="s-disc"><span>${esc(d.label)}</span><span>${d.amount ? "−" + money(d.amount) : "免運"}</span></div>`).join("")}
               <div><span>運費</span><span>${o.shippingFee ? money(o.shippingFee) : "免運"}</span></div>
               <div class="total"><span>總計</span><span>${money(o.total)}</span></div>
             </div>
