@@ -44,6 +44,11 @@
     const out = [];
     if (q.nextTier) out.push(`再買 ${money(q.nextTier.gap)}，${esc(q.nextTier.name)}可以折 ${money(q.nextTier.off)}`);
     if (q.freeGap > 0) out.push(`再買 ${money(q.freeGap)} 就免運`);
+    // 沒登入、而且有會員等級優惠時，提醒登入
+    const cfg = DB.tiers.get();
+    if (!DB.auth.current() && cfg.enabled && cfg.tiers.some(t => t.percent < 100 || t.freeShip)) {
+      out.push(`會員<a href="#shop/login" data-back="${esc(Router.current)}">登入</a>後，可以享有會員等級優惠`);
+    }
     return out.map(t => `<div class="s-gap">${t}</div>`).join("");
   }
   /* 優惠碼輸入框；套用或移除後呼叫 redraw */
@@ -500,6 +505,21 @@
     const u = DB.auth.current();
     if (!u) { afterLogin = "shop/account"; return Router.go("shop/login"); }
     const list = DB.orders.mine();
+    const lv = DB.tiers.of(u.id);
+    const cfg = DB.tiers.get();
+    const tierCard = lv ? `
+      <section class="s-box s-tier">
+        <div class="s-box-head"><h2>會員等級</h2><span class="s-tier-name">${esc(lv.tier.name)}</span></div>
+        <div class="s-tier-benefit">${esc(DB.tiers.benefit(lv.tier))}</div>
+        ${lv.next ? `
+          <div class="s-meter" role="img" aria-label="升級進度"><i style="width:${Math.min(100, (lv.spent - lv.tier.minSpend) / (lv.next.minSpend - lv.tier.minSpend) * 100).toFixed(1)}%"></i></div>
+          <div class="small">再消費 <b class="mono">${money(lv.gap)}</b> 升級為「${esc(lv.next.name)}」：${esc(DB.tiers.benefit(lv.next))}</div>`
+        : `<div class="small" style="color:var(--s-muted)">你已經是最高等級，謝謝你的支持</div>`}
+        <details class="s-tier-all"><summary class="small">看全部等級</summary>
+          <ul>${cfg.tiers.map(t => `<li class="${t.id === lv.tier.id ? "is-me" : ""}"><b>${esc(t.name)}</b><span>${t.minSpend ? `消費滿 ${money(t.minSpend)}` : "註冊即享"}</span><span>${esc(DB.tiers.benefit(t))}</span></li>`).join("")}</ul>
+          <p class="small" style="margin:0;color:var(--s-muted)">累積${cfg.period === "12m" ? "最近 12 個月" : ""}已付款、未取消的訂單金額；目前 ${money(lv.spent)}。</p>
+        </details>
+      </section>` : "";
     shell(`
       <div class="s-wrap s-page">
         <div class="s-page-head"><h1>會員中心</h1><button class="btn" type="button" id="ac-out">登出</button></div>
@@ -516,6 +536,7 @@
               </a>`).join("")}</div>` : `<div class="empty">還沒有訂單<div style="margin-top:12px"><a class="btn btn-primary" href="#shop">去逛逛</a></div></div>`}
           </section>
           <div style="display:grid;gap:18px">
+            ${tierCard}
             <form class="s-box" id="ac-profile" novalidate>
               <h2>會員資料</h2>
               <div class="field"><label>手機（帳號）</label><div class="mono">${esc(u.phone)}</div></div>

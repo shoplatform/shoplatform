@@ -158,7 +158,7 @@ window.makeSeed = function () {
   ];
 
   return {
-    version: 4,
+    version: 5,
     sessions: {},
     cartCoupon: "",
     currentStoreId: "demo",
@@ -192,6 +192,14 @@ window.makeSeed = function () {
           { id: "c_scent", name: "香氛" },
         ],
         products, customers, orders, coupons, promotions,
+        memberTiers: {
+          enabled: true, period: "all",
+          tiers: [
+            { id: "tier_base", name: "一般會員", minSpend: 0, percent: 100, freeShip: false },
+            { id: "tier_silver", name: "銀卡", minSpend: 3000, percent: 95, freeShip: false },
+            { id: "tier_gold", name: "金卡", minSpend: 10000, percent: 90, freeShip: true },
+          ],
+        },
         counters: { order: 5 },
       },
     },

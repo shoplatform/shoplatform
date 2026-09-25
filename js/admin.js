@@ -40,10 +40,11 @@
             <div class="sep">行銷</div>
             ${link("admin/coupons", "coupons", "優惠券")}
             ${link("admin/promotions", "promotions", "滿額活動")}
+            ${link("admin/tiers", "tiers", "會員等級")}
             <div class="sep">商店</div>
             ${link("admin/settings", "settings", "設定")}
           </nav>
-          <div class="side-foot">骨架版 v0.4 · 金流未串接</div>
+          <div class="side-foot">骨架版 v0.5 · 金流未串接</div>
         </aside>
         <main class="main" id="main">${content}</main>
       </div>`;
@@ -635,30 +636,117 @@
   }
 
   /* ---------- 會員 ---------- */
-  let cq = "";
+  let cq = "", ctier = "";
+  // 等級標籤：第幾級決定顏色深淺
+  const tierPill = lv => lv ? `<span class="tier-pill t${Math.min(lv.index, 4)}">${esc(lv.tier.name)}</span>` : "";
   function viewCustomers() {
+    const cfg = DB.tiers.get();
+    const on = cfg.enabled;
+    if (!on) ctier = "";
     shell("customers", `
-      <div class="page-head"><h1>會員</h1></div>
+      <div class="page-head"><h1>會員</h1>${on ? `<a class="btn" href="#admin/tiers">會員等級設定</a>` : ""}</div>
       <section class="panel">
-        <div class="panel-head"><div class="toolbar"><input type="search" id="cq" placeholder="搜尋姓名、手機、Email" value="${esc(cq)}" aria-label="搜尋會員"></div></div>
+        <div class="panel-head"><div class="toolbar">
+          <input type="search" id="cq" placeholder="搜尋姓名、手機、Email" value="${esc(cq)}" aria-label="搜尋會員">
+          ${on ? `<select id="ctier" aria-label="等級"><option value="">全部等級</option>${cfg.tiers.map(t => `<option value="${t.id}" ${ctier === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>` : ""}
+        </div></div>
         <div id="c-list"></div>
       </section>`);
     const draw = () => {
-      const list = DB.customers.list(cq);
+      const list = DB.customers.list(cq).map(c => Object.assign(c, { level: DB.tiers.of(c.id) }))
+        .filter(c => !ctier || (c.level && c.level.tier.id === ctier));
       document.getElementById("c-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th>姓名</th><th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
+        <thead><tr><th>姓名</th>${on ? "<th>等級</th>" : ""}<th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
         <tbody>${list.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
-          <td>${esc(c.name)}</td><td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
+          <td>${esc(c.name)}</td>${on ? `<td>${tierPill(c.level)}</td>` : ""}<td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
           <td class="r num">${c.orderCount}</td><td class="r num">${money(c.totalSpent)}</td><td class="num">${date(c.lastOrderAt)}</td>
         </tr>`).join("")}</tbody></table></div>` : `<div class="empty">沒有符合的會員</div>`;
     };
     draw();
     document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; draw(); });
+    const sel = document.getElementById("ctier");
+    if (sel) sel.addEventListener("change", e => { ctier = e.target.value; draw(); });
+  }
+
+  /* ---------- 會員等級設定 ---------- */
+  function viewTiers() {
+    const cfg = DB.tiers.get();
+    const rows = cfg.tiers.map(t => ({ ...t }));
+    const counts = {};
+    DB.customers.list().forEach(c => { const lv = DB.tiers.of(c.id); if (lv) counts[lv.tier.id] = (counts[lv.tier.id] || 0) + 1; });
+    shell("tiers", `
+      <div class="page-head"><h1>會員等級</h1><button class="btn btn-primary" id="tr-save">儲存</button></div>
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>等級與權益</h2><button class="btn btn-sm" type="button" id="tr-add">新增等級</button></div>
+          <div class="table-wrap"><table class="tbl variant-tbl tier-tbl">
+            <thead><tr><th>等級名稱</th><th>升級門檻（NT$）</th><th>折數</th><th>免運</th><th class="r">目前人數</th><th></th></tr></thead>
+            <tbody id="tr-rows"></tbody>
+          </table></div>
+          <div class="panel-body" style="padding-top:0">
+            <p class="small muted" style="margin:0">折數填 95 代表 95 折、9 折填 90、不打折填 100。第一級是所有會員的起點，門檻固定為 0。會員升到哪一級，就用那一級的折數，不會累加。</p>
+          </div>
+        </section>
+        <div style="display:grid;gap:16px">
+          <section class="panel">
+            <div class="panel-head"><h2>規則</h2></div>
+            <div class="panel-body">
+              <label class="check"><input type="checkbox" id="tr-on" ${cfg.enabled ? "checked" : ""}> 啟用會員分級</label>
+              <div class="field"><label for="tr-period">消費怎麼算</label>
+                <select id="tr-period">
+                  <option value="all" ${cfg.period === "all" ? "selected" : ""}>全部累積（只升不降）</option>
+                  <option value="12m" ${cfg.period === "12m" ? "selected" : ""}>最近 12 個月（會自動降級）</option>
+                </select>
+                <span class="hint">只算已付款、沒取消的訂單（待出貨、已出貨、已完成）</span>
+              </div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>結帳時怎麼折</h2></div>
+            <div class="panel-body">
+              <p class="small" style="margin:0;line-height:1.8">商品小計 → 滿額活動 → <b>會員等級折扣</b> → 優惠碼 → 運費<br>
+              <span class="muted">等級優惠只在會員登入後結帳才會套用。沒登入的顧客仍會累積消費，登入後就能享有。</span></p>
+            </div>
+          </section>
+        </div>
+      </div>`);
+    const body = document.getElementById("tr-rows");
+    const draw = () => {
+      body.innerHTML = rows.map((t, i) => `<tr>
+        <td><input type="text" data-i="${i}" data-k="name" id="tr-name-${i}" value="${esc(t.name)}" maxlength="12" aria-label="等級名稱"></td>
+        <td><input type="number" data-i="${i}" data-k="minSpend" id="tr-min-${i}" value="${i === 0 ? 0 : t.minSpend}" min="0" step="100" ${i === 0 ? "disabled" : ""} aria-label="升級門檻"></td>
+        <td><input type="number" data-i="${i}" data-k="percent" id="tr-pct-${i}" value="${t.percent}" min="1" max="100" step="1" aria-label="折數"></td>
+        <td><input type="checkbox" data-i="${i}" data-k="freeShip" id="tr-ship-${i}" ${t.freeShip ? "checked" : ""} aria-label="免運" style="width:16px;height:16px;accent-color:var(--accent)"></td>
+        <td class="r num">${t.id && counts[t.id] ? counts[t.id] : 0}</td>
+        <td class="r">${i === 0 ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-del="${i}">移除</button>`}</td>
+      </tr>`).join("");
+    };
+    draw();
+    body.addEventListener("input", e => {
+      const el = e.target.closest("[data-k]"); if (!el) return;
+      const t = rows[+el.dataset.i];
+      t[el.dataset.k] = el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value;
+    });
+    body.addEventListener("change", e => { const el = e.target.closest('[data-k="freeShip"]'); if (el) rows[+el.dataset.i].freeShip = el.checked; });
+    body.addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (b) { rows.splice(+b.dataset.del, 1); draw(); } });
+    document.getElementById("tr-add").addEventListener("click", () => {
+      if (rows.length >= 5) return toast("最多 5 個等級", "error");
+      const last = rows[rows.length - 1];
+      rows.push({ name: "", minSpend: last.minSpend ? last.minSpend * 2 : 3000, percent: Math.max(80, last.percent - 5), freeShip: false });
+      draw(); document.getElementById(`tr-name-${rows.length - 1}`).focus();
+    });
+    document.getElementById("tr-save").addEventListener("click", () => {
+      try {
+        DB.tiers.save({ enabled: document.getElementById("tr-on").checked, period: document.getElementById("tr-period").value, tiers: rows });
+        toast("已儲存會員等級"); viewTiers();
+      } catch (err) { toast(err.message, "error"); }
+    });
   }
 
   function viewCustomer(id) {
     const c = DB.customers.get(id);
     if (!c) return notFound("找不到這位會員", "admin/customers");
+    const lv = DB.tiers.of(c.id);
     shell("customers", `
       <div class="page-head"><div class="crumbs"><a href="#admin/customers">會員</a><span>/</span><span>${esc(c.name)}</span></div></div>
       <div class="kpis">
@@ -669,13 +757,23 @@
       </div>
       <div class="grid-2">
         <section class="panel"><div class="panel-head"><h2>訂單紀錄</h2></div>${ordersTable(DB.orders.byCustomer(c.id))}</section>
+        <div style="display:grid;gap:16px">
         <section class="panel"><div class="panel-head"><h2>聯絡資料</h2></div>
           <div class="panel-body"><dl class="kv">
             <dt>帳號</dt><dd>${accountPill(c)}${c.hasAccount ? ` <span class="small muted">${date(c.registeredAt)} 開通</span>` : ""}</dd>
             <dt>手機</dt><dd class="mono">${esc(c.phone)}</dd><dt>Email</dt><dd>${esc(c.email) || "—"}</dd></dl>
-          ${c.hasAccount ? "" : `<p class="small muted" style="margin:0">這位顧客是結帳時自動建立的。他用同一支手機在前台註冊後，就能登入看到這些訂單。</p>`}
-          <div class="notice">會員分級、標籤、購物金排在第二階段（P1）。</div></div>
+          ${c.hasAccount ? "" : `<p class="small muted" style="margin:0">這位顧客是結帳時自動建立的。他用同一支手機在前台註冊後，就能登入看到這些訂單。</p>`}</div>
         </section>
+        ${lv ? `<section class="panel"><div class="panel-head"><h2>會員等級</h2>${tierPill(lv)}</div>
+          <div class="panel-body">
+            <dl class="kv"><dt>有效消費</dt><dd class="num">${money(lv.spent)}</dd><dt>目前權益</dt><dd>${esc(DB.tiers.benefit(lv.tier))}</dd></dl>
+            ${lv.next ? `<div style="display:grid;gap:6px">
+              <div class="small">再消費 <b class="num">${money(lv.gap)}</b> 升級為「${esc(lv.next.name)}」</div>
+              <div class="meter"><i style="width:${Math.min(100, (lv.spent - lv.tier.minSpend) / (lv.next.minSpend - lv.tier.minSpend) * 100).toFixed(1)}%"></i></div>
+            </div>` : `<div class="small muted">已經是最高等級</div>`}
+            ${c.hasAccount ? "" : `<p class="small muted" style="margin:0">還沒開通帳號，等級優惠要登入後結帳才會套用。</p>`}
+          </div></section>` : ""}
+        </div>
       </div>`);
   }
 
@@ -971,6 +1069,7 @@
       case "coupon": return viewCouponEdit(arg);
       case "promotions": return viewPromotions();
       case "promotion": return viewPromotionEdit(arg);
+      case "tiers": return viewTiers();
       default: return notFound("找不到這個頁面", "admin");
     }
   };

@@ -43,7 +43,15 @@
       });
       if (s.cartCoupon === undefined) s.cartCoupon = "";
     }
-    s.version = 4;
+    // v4 → v5：加上會員等級設定；示範店開啟範例等級
+    if ((s.version || 1) < 5) {
+      const demo = window.makeSeed().stores.demo;
+      Object.values(s.stores).forEach(store => {
+        if (!store.memberTiers) store.memberTiers = store.id === "demo" ? demo.memberTiers
+          : { enabled: false, period: "all", tiers: [{ id: "tier_base", name: "一般會員", minSpend: 0, percent: 100, freeShip: false }] };
+      });
+    }
+    s.version = 5;
     return s;
   }
 
@@ -483,6 +491,57 @@
     remove(id) { S().promotions = S().promotions.filter(p => p.id !== id); commit(); },
   };
 
+  /* ---------- 會員等級 ----------
+   * 等級看「有效消費」：已付款以上（待出貨、已出貨、已完成）且沒取消的訂單總額。
+   * period："all" 看全部訂單；"12m" 只看最近 12 個月（會自動降級）。
+   * 每個等級：門檻 minSpend、折數 percent（95 = 95 折、100 = 不打折）、免運 freeShip。
+   * 等級優惠只在會員「登入後」結帳才套用（要確定是本人）。
+   */
+  const COUNTED = ["paid", "shipped", "completed"];
+  const tiers = {
+    get: () => clone(S().memberTiers),
+    save(input) {
+      const d = clone(input);
+      d.enabled = !!d.enabled;
+      d.period = d.period === "12m" ? "12m" : "all";
+      d.tiers = (d.tiers || []).map(t => ({
+        id: t.id || uid("tier"), name: String(t.name || "").trim(),
+        minSpend: Math.max(0, Math.floor(+t.minSpend || 0)),
+        percent: Math.min(100, Math.max(1, Math.floor(+t.percent || 100))),
+        freeShip: !!t.freeShip,
+      })).sort((a, b) => a.minSpend - b.minSpend);
+      if (!d.tiers.length) throw new Error("至少要有一個等級");
+      if (d.tiers.some(t => !t.name)) throw new Error("每個等級都要有名稱");
+      if (new Set(d.tiers.map(t => t.name)).size !== d.tiers.length) throw new Error("等級名稱不能重複");
+      if (new Set(d.tiers.map(t => t.minSpend)).size !== d.tiers.length) throw new Error("升級門檻不能重複");
+      d.tiers[0].minSpend = 0; // 最低等級一定從 0 開始，每位會員都有等級
+      S().memberTiers = d; commit(); return clone(d);
+    },
+    /* 某位顧客的有效消費 */
+    spentOf(customerId) {
+      const since = S().memberTiers.period === "12m" ? Date.now() - 365 * 86400000 : -Infinity;
+      return S().orders.filter(o => o.customerId === customerId && COUNTED.includes(o.status) && new Date(o.createdAt).getTime() >= since)
+        .reduce((s, o) => s + o.total, 0);
+    },
+    /* 顧客目前的等級、下一級、還差多少；沒開啟分級回傳 null */
+    of(customerId) {
+      const cfg = S().memberTiers;
+      if (!cfg || !cfg.enabled || !customerId) return null;
+      const spent = tiers.spentOf(customerId);
+      const list = cfg.tiers;
+      let idx = 0;
+      list.forEach((t, i) => { if (spent >= t.minSpend) idx = i; });
+      const next = list[idx + 1] || null;
+      return { tier: clone(list[idx]), index: idx, spent, next: next && clone(next), gap: next ? next.minSpend - spent : 0 };
+    },
+    benefit(t) { // 一句話說明等級權益
+      const parts = [];
+      if (t.percent < 100) parts.push(`全館 ${t.percent % 10 === 0 ? t.percent / 10 : t.percent} 折`);
+      if (t.freeShip) parts.push("免運");
+      return parts.join("、") || "累積消費升級";
+    },
+  };
+
   /* 檢查優惠碼能不能用在這張單上；不能用就丟出原因 */
   function evalCoupon(code, { subtotal, afterPromo, promoApplied, customerId, phone }) {
     const c = S().coupons.find(x => x.code === normCode(code));
@@ -504,7 +563,7 @@
     return { code: c.code, name: c.name, amount, freeShip: c.type === "freeship" };
   }
 
-  /* ---------- 金額計算：商品小計 → 滿額折 → 優惠碼 → 運費 ----------
+  /* ---------- 金額計算：商品小計 → 滿額折 → 會員等級折扣 → 優惠碼 → 運費 ----------
    * opts.couponCode：要套用的優惠碼（空白代表不用）
    * opts.customerId / opts.phone：用來檢查會員限定、每人限用次數
    * 免運門檻看「折扣後」的商品金額
@@ -523,26 +582,33 @@
     const promoAmt = promo ? promo.amount : 0;
     const afterPromo = subtotal - promoAmt;
 
-    let coupon = null, couponError = "";
+    // 會員等級折扣：只有登入的會員才有
     const me_ = me();
     const customerId = opts.customerId || (me_ ? me_.id : "");
+    const level = me_ ? tiers.of(me_.id) : null;
+    const memberAmt = level && level.tier.percent < 100 ? Math.floor(afterPromo * (100 - level.tier.percent) / 100) : 0;
+    const afterMember = afterPromo - memberAmt;
+
+    let coupon = null, couponError = "";
     if (opts.couponCode) {
-      try { coupon = evalCoupon(opts.couponCode, { subtotal, afterPromo, promoApplied: !!promo, customerId, phone: opts.phone || (me_ ? me_.phone : "") }); }
+      try { coupon = evalCoupon(opts.couponCode, { subtotal, afterPromo: afterMember, promoApplied: !!promo, customerId, phone: opts.phone || (me_ ? me_.phone : "") }); }
       catch (e) { couponError = e.message; }
     }
     const couponAmt = coupon ? coupon.amount : 0;
-    const discount = promoAmt + couponAmt;
+    const discount = promoAmt + memberAmt + couponAmt;
     const goods = subtotal - discount;
 
     const method = st.shippingMethods.find(m => m.id === shippingMethodId);
     const freeByThreshold = st.freeShippingThreshold > 0 && goods >= st.freeShippingThreshold;
-    const free = freeByThreshold || !!(coupon && coupon.freeShip);
+    const freeByLevel = !!(level && level.tier.freeShip);
+    const free = freeByThreshold || freeByLevel || !!(coupon && coupon.freeShip);
     const shippingFee = !method || free ? 0 : method.fee;
     const discounts = [];
     if (promo) discounts.push({ kind: "promo", label: `${promo.name}（滿 ${money0(promo.min)} 折 ${money0(promo.amount)}）`, amount: promoAmt });
+    if (memberAmt || freeByLevel) discounts.push({ kind: "member", label: `會員等級 ${level.tier.name}（${tiers.benefit(level.tier)}）`, amount: memberAmt, freeShip: freeByLevel });
     if (coupon) discounts.push({ kind: "coupon", code: coupon.code, label: `優惠碼 ${coupon.code}・${coupon.name}`, amount: couponAmt, freeShip: coupon.freeShip });
     return {
-      subtotal, promo, nextTier: nextTier && { ...nextTier, gap: nextTier.min - subtotal },
+      subtotal, promo, level, nextTier: nextTier && { ...nextTier, gap: nextTier.min - subtotal },
       coupon, couponError, discounts, discount, goods, shippingFee, total: goods + shippingFee,
       freeShipByCoupon: !!(coupon && coupon.freeShip),
       freeGap: free ? 0 : Math.max(0, st.freeShippingThreshold - goods),
@@ -747,7 +813,7 @@
   }
 
   window.DB = {
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),
