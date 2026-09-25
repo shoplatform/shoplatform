@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>開店平台 · 骨架版</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/admin.css">
+  <link rel="stylesheet" href="css/shop.css">
+</head>
+<body>
+  <!-- 開發用切換列：之後正式上線時，前台與後台會拆成不同網址 -->
+  <div class="devbar">
+    <b>DEV</b>
+    <a href="#admin" data-side="admin">商家後台</a>
+    <a href="#shop" data-side="shop">商店前台</a>
+  </div>
+  <div id="app"></div>
+
+  <!-- 載入順序很重要：資料 → 工具 → 頁面 → 啟動 -->
+  <script src="js/seed.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/xlsx.js"></script>
+  <script src="js/admin.js"></script>
+  <script src="js/shop.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
