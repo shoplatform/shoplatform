@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.17）
+ * db.js — 資料層（Supabase 資料庫版，v0.20）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -221,6 +221,7 @@
       admin.useStore(r.slug);
       return r;
     },
+    exportData: () => rpc("admin_export_data", { p_store: adminStore.id }),
   };
 
   /* 平台首頁的公開資訊（年費、試用天數…） */
@@ -282,6 +283,7 @@
     async setSuspended(store, on, reason) { await rpc("platform_set_suspended", { p_store: store, p_suspended: !!on, p_reason: reason || "" }); await afterPlatform(); },
     async saveNote(store, note) { await rpc("platform_save_note", { p_store: store, p_note: note || "" }); await afterPlatform(); },
     async saveSettings(v) { await rpc("platform_save_settings", { p_settings: v }); cache.home = null; await afterPlatform(); },
+    exportData: () => rpc("platform_export_data"),
     reload: () => loadPlatform(),
   };
   // 寫入後重新載入後台快取

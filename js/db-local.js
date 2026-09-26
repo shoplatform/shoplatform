@@ -1270,7 +1270,8 @@
   const ready = async () => ({ state: "ok" });
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
-    me: () => ({ role: "owner", perms: [] }), can: () => true };
+    me: () => ({ role: "owner", perms: [] }), can: () => true,
+    exportData: async () => ({ version: "0.20", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }) };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),

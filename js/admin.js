@@ -74,7 +74,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.17 · 資料庫已連線" : "v0.17 · 離線示範版"}</div>
+            <div>${remote ? "v0.20 · 資料庫已連線" : "v0.20 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -1728,7 +1728,7 @@
         <div class="panel-body"><dl class="kv">
           <dt>登入帳號</dt><dd>${esc((DB.admin.user() || {}).email || "")}</dd>
           <dt>資料存放</dt><dd>Supabase 資料庫（商店代號 <span class="mono">${esc((window.SHOP_CONFIG || {}).storeSlug || "")}</span>）</dd>
-        </dl></div>
+        </dl>${DB.admin.me().role === "owner" ? `<div class="actions"><button class="btn" id="st-backup" type="button">匯出我的商店資料（JSON）</button></div><p class="small muted" style="margin:0">包含商品、規格、訂單、會員、庫存、進貨與行銷資料。檔案含顧客個資，請妥善保管。</p>` : ""}</div>
       </section>` : ""}
       <section class="panel" ${DB.features.reset ? "" : "hidden"}>
         <div class="panel-head"><h2>開發工具</h2></div>
@@ -1754,6 +1754,17 @@
       if (!cur.shippingMethods.some(m => m.enabled)) return toast("至少要開一種取貨方式", "error");
       if (!cur.paymentMethods.some(m => m.enabled)) return toast("至少要開一種付款方式", "error");
       try { await DB.settings.update(cur); toast("已儲存設定"); viewSettings(); } catch (err) { toast(err.message, "error"); }
+    });
+    const backup = document.getElementById("st-backup");
+    if (backup) backup.addEventListener("click", async () => {
+      backup.disabled = true; backup.textContent = "整理資料中…";
+      try {
+        const data = await DB.admin.exportData();
+        const slug = (DB.admin.store() || {}).slug || "store";
+        download(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), `商店備份_${slug}_${new Date().toISOString().slice(0, 10)}.json`);
+        toast("商店資料已匯出");
+      } catch (err) { toast(err.message, "error"); }
+      finally { if (backup.isConnected) { backup.disabled = false; backup.textContent = "匯出我的商店資料（JSON）"; } }
     });
     document.getElementById("st-reset").addEventListener("click", async () => {
       if (await confirmBox({ title: "重置範例資料？", body: "你新增或修改的商品、訂單、會員、圖片都會被清掉。", ok: "重置", danger: true })) {

@@ -5,7 +5,7 @@
  *   ‧window.Billing       商店方案狀態的文字與標籤、開新店表單（後台也會用）
  * ========================================================= */
 (function () {
-  const { esc, money, date, toast, confirmBox, Router } = window.UI;
+  const { esc, money, date, toast, confirmBox, download, Router } = window.UI;
   const root = () => document.getElementById("app");
   const ymd = s => (s ? String(s).slice(0, 10).replace(/-/g, "/") : "—");
 
@@ -198,7 +198,7 @@
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.17 · 平台管理者</div>
+            <div>v0.20 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -422,6 +422,11 @@
     shell("settings", `
       <div class="page-head"><h1>平台設定</h1><button class="btn btn-primary" id="pf-save" type="button">儲存設定</button></div>
       <section class="panel">
+        <div class="panel-head"><h2>全部資料備份</h2></div>
+        <div class="panel-body"><p class="muted" style="margin:0">匯出所有商店的商品、訂單、會員、庫存、進貨、平台設定與收款紀錄。檔案含個資與營運資料，請存放在安全的位置。</p>
+          <div class="actions"><button class="btn" id="pf-backup" type="button">匯出平台全部資料（JSON）</button></div></div>
+      </section>
+      <section class="panel">
         <div class="panel-head"><h2>方案</h2></div>
         <div class="panel-body grid-form">
           <div class="field"><label for="pf-name">平台名稱</label><input type="text" id="pf-name" value="${esc(v.platformName)}"><span class="hint">顯示在平台首頁與總控台</span></div>
@@ -454,6 +459,16 @@
           terms: g("pf-terms").value, privacy: g("pf-privacy").value });
         toast("已儲存平台設定"); viewSettings();
       } catch (err) { toast(err.message, "error"); e.target.disabled = false; }
+    });
+    const backup = document.getElementById("pf-backup");
+    backup.addEventListener("click", async () => {
+      backup.disabled = true; backup.textContent = "整理資料中…";
+      try {
+        const data = await DB.platform.exportData();
+        download(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), `平台完整備份_${new Date().toISOString().slice(0, 10)}.json`);
+        toast("平台資料已匯出");
+      } catch (err) { toast(err.message, "error"); }
+      finally { if (backup.isConnected) { backup.disabled = false; backup.textContent = "匯出平台全部資料（JSON）"; } }
     });
   }
 
