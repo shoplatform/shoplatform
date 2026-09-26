@@ -7,6 +7,7 @@
 (function () {
   const { esc, money, date, toast, confirmBox, download, Router } = window.UI;
   const root = () => document.getElementById("app");
+  let orderWatchTimer = null, orderWatchStore = "", orderWatchSince = null, orderWatchBusy = false;
 
   const STATUS_PILL = { pending_payment: "warn", paid: "info", shipped: "ok", completed: "idle", cancelled: "bad" };
   const statusPill = s => `<span class="pill ${STATUS_PILL[s]}">${DB.orders.STATUS[s]}</span>`;
@@ -74,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.20 · 資料庫已連線" : "v0.20 · 離線示範版"}</div>
+            <div>${remote ? "v0.21 · 資料庫已連線" : "v0.21 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -584,6 +585,59 @@
   }
 
   /* ---------- 總覽 ---------- */
+  const notificationButton = () => {
+    if (!("Notification" in window)) return `<span class="small muted">此瀏覽器不支援系統通知</span>`;
+    if (Notification.permission === "granted") return `<button class="btn btn-sm" type="button" disabled>瀏覽器通知已開啟</button>`;
+    if (Notification.permission === "denied") return `<button class="btn btn-sm" type="button" disabled title="請到瀏覽器的網站設定重新允許通知">瀏覽器通知已被封鎖</button>`;
+    return `<button class="btn btn-sm" id="notify-on" type="button">開啟瀏覽器通知</button>`;
+  };
+
+  function bindNotificationButton() {
+    const b = document.getElementById("notify-on");
+    if (!b) return;
+    b.addEventListener("click", async () => {
+      const result = await Notification.requestPermission();
+      if (result === "granted") toast("瀏覽器通知已開啟，新訂單來時會提醒你");
+      else toast("沒有開啟通知；新訂單仍會在後台畫面提示", "error");
+      viewDashboard();
+    });
+  }
+
+  function startOrderWatch() {
+    if (DB.mode !== "remote" || !can("orders") || !DB.admin.store()) return;
+    const sid = DB.admin.store().id;
+    if (orderWatchStore === sid && (orderWatchTimer || orderWatchBusy)) return;
+    if (orderWatchTimer) clearTimeout(orderWatchTimer);
+    orderWatchStore = sid; orderWatchSince = null;
+    const tick = async () => {
+      orderWatchTimer = null;
+      if (!location.hash.startsWith("#admin") || DB.admin.store().id !== sid) return;
+      if (!orderWatchBusy) {
+        orderWatchBusy = true;
+        try {
+          const r = await DB.admin.newOrders(orderWatchSince);
+          orderWatchSince = r.checkedAt;
+          if (r.rows.length) {
+            await DB.admin.refresh();
+            const latest = r.rows[r.rows.length - 1];
+            toast(r.rows.length === 1 ? `新訂單 ${latest.number}・${latest.name}・${money(latest.total)}` : `收到 ${r.rows.length} 筆新訂單`);
+            if ("Notification" in window && Notification.permission === "granted") {
+              const n = new Notification(r.rows.length === 1 ? `新訂單 ${latest.number}` : `${r.rows.length} 筆新訂單`, {
+                body: r.rows.length === 1 ? `${latest.name}・${money(latest.total)}` : "打開後台查看訂單",
+                tag: `orders-${sid}`,
+              });
+              n.onclick = () => { window.focus(); Router.go("admin/orders"); n.close(); };
+            }
+            if (location.hash === "#admin" || location.hash === "") Router.render();
+          }
+        } catch (e) { /* 網路暫時中斷時，下次再檢查 */ }
+        finally { orderWatchBusy = false; }
+      }
+      orderWatchTimer = setTimeout(tick, 20000);
+    };
+    tick();
+  }
+
   function viewDashboard() {
     const s = DB.stats();
     const low = DB.products.lowStock();
@@ -606,7 +660,7 @@
         ${lowPanel}`);
     }
     shell("dash", `
-      <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
+      <div class="page-head"><h1>總覽</h1><div class="actions">${DB.mode === "remote" ? notificationButton() : ""}<span class="muted">${date(new Date().toISOString())}</span></div></div>
       ${DB.mode === "remote" ? storeUrlBox() : ""}
       <div class="kpis">
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>
@@ -626,6 +680,7 @@
         <div class="panel-head"><h2>最新訂單</h2><a class="small" href="#admin/orders">全部訂單</a></div>
         ${ordersTable(recent)}
       </section>`);
+    bindNotificationButton();
   }
 
   function barChart(daily) {
@@ -2495,6 +2550,7 @@
     if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
     if (!DB.features.inventory && ["stock", "moves", "purchases", "purchase", "suppliers", "supplier"].includes(page)) return phaseTwo("", "進銷存");
     if (!DB.features.tiers && page === "tiers") return phaseTwo("", "會員等級");
+    startOrderWatch();
     switch (page) {
       case undefined: return viewDashboard();
       case "products": return arg === "sort" ? viewProductSort() : viewProducts();
