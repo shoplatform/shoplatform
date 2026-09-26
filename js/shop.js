@@ -107,6 +107,7 @@
         <footer class="s-foot"><div class="s-wrap">
           <span>© ${new Date().getFullYear()} ${esc(st.name)}</span>
           <span>客服 ${esc(st.email)}${st.phone ? ` · ${esc(st.phone)}` : ""}</span>
+          ${st.returnPolicy ? `<a href="#shop/policy">退換貨政策</a>` : ""}
           ${poweredBy()}
         </div></footer>
       </div>`;
@@ -114,6 +115,11 @@
     q.addEventListener("keydown", e => {
       if (e.key === "Enter") { query = q.value; Router.go("shop"); }
     });
+  }
+
+  function viewPolicy() {
+    const st = DB.settings.get();
+    shell(`<div class="s-wrap s-page s-narrow"><h1>退換貨政策</h1><section class="s-box" style="white-space:pre-wrap;line-height:1.8">${st.returnPolicy ? esc(st.returnPolicy) : "店家尚未公布退換貨政策，購買前請先聯絡客服確認。"}</section></div>`);
   }
 
   /* ---------- 商品評價 ---------- */
@@ -440,6 +446,7 @@
               <div class="field"><label for="co-note">備註（選填）</label><textarea id="co-note" rows="2">${esc(form.note)}</textarea></div>
               <div class="hp" aria-hidden="true"><label for="co-web">網站（請留空）</label><input type="text" id="co-web" name="website" tabindex="-1" autocomplete="off"></div>
             </section>
+            ${st.returnPolicy ? `<section class="s-box"><h2>退換貨政策</h2><div class="small" style="white-space:pre-wrap;line-height:1.7;color:var(--s-muted)">${esc(st.returnPolicy)}</div></section>` : ""}
           </div>
           <aside class="s-box" id="co-sum"></aside>
         </form>
@@ -608,6 +615,7 @@
             <div class="field"><label for="rg-name">姓名</label><input type="text" id="rg-name" autocomplete="name" value="${esc(pre.name || "")}"></div>
             <div class="field"><label for="rg-email">Email（選填）</label><input type="email" id="rg-email" autocomplete="email" value="${esc(pre.email || "")}"></div>
             <div class="field"><label for="rg-pw">設定密碼</label><input type="password" id="rg-pw" autocomplete="new-password"><span class="hint">至少 8 個字元，要有英文字母和數字</span></div>
+            <label class="check"><input type="checkbox" id="rg-agree"> 我已閱讀並同意服務條款與隱私權政策</label>
             <button class="btn btn-primary" type="submit" style="padding:11px">完成註冊</button>
           </div>
           <div class="s-links"><a href="#shop/login">已經有帳號？登入</a></div>
@@ -635,6 +643,7 @@
     f.addEventListener("submit", e => {
       e.preventDefault();
       if (!sent) return toast("請先取得驗證碼", "error");
+      if (!f.querySelector("#rg-agree").checked) return toast("請先閱讀並同意服務條款與隱私權政策", "error");
       busy(f.querySelector("button[type=submit]"), async () => {
         const u = await DB.auth.register({
           phone: sent.phone, code: f.querySelector("#rg-code").value,
@@ -687,6 +696,7 @@
           <div class="field"><label for="re-name">姓名</label><input type="text" id="re-name" autocomplete="name" value="${esc(pre.name || "")}"></div>
           <div class="field"><label for="re-phone">手機</label><input type="tel" id="re-phone" autocomplete="tel" placeholder="0912345678" value="${esc(pre.phone || "")}"></div>
           <div class="field"><label for="re-pw">設定密碼</label><input type="password" id="re-pw" autocomplete="new-password"><span class="hint">至少 8 個字元</span></div>
+          <label class="check"><input type="checkbox" id="re-agree"> 我已閱讀並同意<a href="${esc(DB.admin.storeUrl(""))}#home/terms" target="_blank">服務條款</a>與<a href="${esc(DB.admin.storeUrl(""))}#home/privacy" target="_blank">隱私權政策</a></label>
           <button class="btn btn-primary" type="submit" style="padding:11px">註冊</button>
           <div class="s-links"><a href="#shop/login">已經有帳號？登入</a></div>
         </form>
@@ -700,6 +710,7 @@
     f.querySelector(pre.email ? "#re-pw" : "#re-email").focus();
     f.addEventListener("submit", e => {
       e.preventDefault();
+      if (!f.querySelector("#re-agree").checked) return toast("請先閱讀並同意服務條款與隱私權政策", "error");
       busy(f.querySelector("button[type=submit]"), async () => {
         const email = f.querySelector("#re-email").value.trim();
         const r = await DB.auth.signup({ email, password: f.querySelector("#re-pw").value,
@@ -984,7 +995,7 @@
   window.ShopApp = function (parts) {
     const [, page, arg] = parts;
     const cs = DB.shopState ? DB.shopState() : { closed: false };
-    if (cs.closed && page !== "track" && page !== "order") return viewClosed(cs.message);
+    if (cs.closed && page !== "track" && page !== "order" && page !== "policy") return viewClosed(cs.message);
     switch (page) {
       case undefined: return viewHome();
       case "c": return viewHome(arg);
@@ -992,6 +1003,7 @@
       case "cart": return viewCart();
       case "checkout": return viewCheckout();
       case "done": return viewDone(arg);
+      case "policy": return viewPolicy();
       case "login": case "register": case "account": case "join": case "forgot": case "reset":
         if (!DB.features.members) return membersSoon();
         if (DB.auth.mode === "email") {

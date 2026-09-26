@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.16）
+ * db.js — 資料層（Supabase 資料庫版，v0.17）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -113,7 +113,7 @@
   let side = "shop";
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
-    return { settings: { name: "", tagline: "", email: "", phone: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
+    return { settings: { name: "", tagline: "", email: "", phone: "", returnPolicy: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
       categories: [], products: [], customers: [], orders: [], coupons: [], promotions: [], store: {},
       memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }

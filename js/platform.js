@@ -61,6 +61,7 @@
             <input type="text" id="sf-slug" class="mono" maxlength="30" placeholder="例如 hill-shop" autocapitalize="off" autocomplete="off" spellcheck="false">
             <span class="hint" id="sf-hint">3～30 個小寫英文、數字或減號，<b>建立後不能改</b></span>
             <span class="hint mono sf-url" id="sf-url"></span></div>
+          <label class="check"><input type="checkbox" id="sf-agree"> 我已閱讀並同意<a href="#home/terms" target="_blank">服務條款</a>與<a href="#home/privacy" target="_blank">隱私權政策</a></label>
           <button class="btn btn-primary" type="submit" style="padding:10px">${trial ? `開始免費試用 ${trial} 天` : "建立商店"}</button>
           ${home.annualFee ? `<p class="small muted" style="margin:0">${trial ? "試用結束後" : ""}年費 ${money(home.annualFee)}／年，平台不抽成。試用期間不用付款。</p>` : ""}
         </form>`;
@@ -80,6 +81,7 @@
       });
       f.addEventListener("submit", async e => {
         e.preventDefault();
+        if (!f.querySelector("#sf-agree").checked) return toast("請先閱讀並同意服務條款與隱私權政策", "error");
         const btn = f.querySelector("button[type=submit]");
         btn.disabled = true;
         try {
@@ -96,9 +98,19 @@
   /* =========================================================
    * 平台首頁 #home
    * ========================================================= */
-  window.HomeApp = function () {
+  window.HomeApp = function (parts) {
     const h = DB.home.info();
     const name = h.platformName || "開店平台";
+    const page = parts && parts[1];
+    if (page === "terms" || page === "privacy") {
+      const isTerms = page === "terms", title = isTerms ? "服務條款" : "隱私權政策";
+      const body = isTerms ? h.terms : h.privacy;
+      root().innerHTML = `<div class="home"><header class="home-top"><div class="home-wrap"><a class="home-logo" href="#home">${esc(name)}</a><nav><a href="#home">回平台首頁</a></nav></div></header>
+        <main class="home-sec"><div class="home-wrap" style="max-width:820px"><h1>${title}</h1>
+          <div class="home-card" style="white-space:pre-wrap;line-height:1.8">${body ? esc(body) : `平台尚未公布${title}，請聯絡平台。`}</div>
+        </div></main>${homeFooter(h, name)}</div>`;
+      return;
+    }
     const demo = DB.admin.storeUrl("demo") + "#shop";
     const cta = h.signupOpen
       ? `<a class="btn btn-primary btn-lg" href="#admin/signup">${h.trialDays ? `免費試用 ${h.trialDays} 天` : "免費開店"}</a>`
@@ -156,12 +168,15 @@
             <dt>怎麼繳年費？</dt><dd>${h.contactEmail ? `來信 <a href="mailto:${esc(h.contactEmail)}">${esc(h.contactEmail)}</a>` : "聯絡平台"}${h.contactLine ? `或加 LINE：${esc(h.contactLine)}` : ""}，確認收款後平台會幫你開通一年。</dd>
           </dl>
         </div></section>
-        <footer class="home-foot"><div class="home-wrap">
-          <span>© ${new Date().getFullYear()} ${esc(name)}</span>
-          ${h.contactEmail ? `<a href="mailto:${esc(h.contactEmail)}">${esc(h.contactEmail)}</a>` : ""}
-        </div></footer>
+        ${homeFooter(h, name)}
       </div>`;
   };
+
+  function homeFooter(h, name) {
+    return `<footer class="home-foot"><div class="home-wrap"><span>© ${new Date().getFullYear()} ${esc(name)}</span>
+      <span><a href="#home/terms">服務條款</a> · <a href="#home/privacy">隱私權政策</a></span>
+      ${h.contactEmail ? `<a href="mailto:${esc(h.contactEmail)}">${esc(h.contactEmail)}</a>` : ""}</div></footer>`;
+  }
 
   /* =========================================================
    * 平台總控台 #platform
@@ -183,7 +198,7 @@
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.16 · 平台管理者</div>
+            <div>v0.17 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -417,6 +432,13 @@
         </div>
       </section>
       <section class="panel">
+        <div class="panel-head"><h2>法律文件</h2><span class="small muted">顯示在平台首頁，開店與註冊時會要求同意</span></div>
+        <div class="panel-body">
+          <div class="field"><label for="pf-terms">服務條款</label><textarea id="pf-terms" rows="12" maxlength="20000">${esc(v.terms || "")}</textarea><span class="hint">最多 20,000 個字</span></div>
+          <div class="field"><label for="pf-privacy">隱私權政策</label><textarea id="pf-privacy" rows="12" maxlength="20000">${esc(v.privacy || "")}</textarea><span class="hint">最多 20,000 個字</span></div>
+        </div>
+      </section>
+      <section class="panel">
         <div class="panel-head"><h2>聯絡方式</h2><span class="small muted">商家要續約時會看到</span></div>
         <div class="panel-body grid-form">
           <div class="field"><label for="pf-email">聯絡 Email</label><input type="email" id="pf-email" value="${esc(v.contactEmail)}"></div>
@@ -428,7 +450,8 @@
       e.target.disabled = true;
       try {
         await DB.platform.saveSettings({ platformName: g("pf-name").value, annualFee: g("pf-fee").value, trialDays: g("pf-trial").value,
-          maxStoresPerUser: g("pf-max").value, signupOpen: g("pf-open").checked, contactEmail: g("pf-email").value, contactLine: g("pf-line").value });
+          maxStoresPerUser: g("pf-max").value, signupOpen: g("pf-open").checked, contactEmail: g("pf-email").value, contactLine: g("pf-line").value,
+          terms: g("pf-terms").value, privacy: g("pf-privacy").value });
         toast("已儲存平台設定"); viewSettings();
       } catch (err) { toast(err.message, "error"); e.target.disabled = false; }
     });

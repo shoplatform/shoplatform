@@ -222,6 +222,7 @@ window.makeSeed = function () {
           tagline: "日常裡好用、耐看的小東西",
           email: "hello@example.com",
           phone: "04-1234-5678",
+          returnPolicy: "商品到貨後 7 天內，如需退換貨請先聯絡客服。商品須保持全新、包裝完整；客製化商品與已拆封的個人衛生用品恕不接受退換貨。",
           freeShippingThreshold: 1200,
           lowStockAlert: 3,
           shippingMethods: [

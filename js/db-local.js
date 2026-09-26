@@ -30,7 +30,10 @@
    * v1 → v2：商品加上 images 欄位
    * v2 → v3：加上會員登入狀態；示範店的第一位會員補上示範帳號 */
   function migrate(s) {
-    Object.values(s.stores).forEach(store => store.products.forEach(p => { if (!Array.isArray(p.images)) p.images = []; }));
+    Object.values(s.stores).forEach(store => {
+      store.products.forEach(p => { if (!Array.isArray(p.images)) p.images = []; });
+      if (store.settings.returnPolicy === undefined) store.settings.returnPolicy = "";
+    });
     if (!s.sessions) s.sessions = {};
     if ((s.version || 1) < 3 && s.stores.demo) {
       const u1 = s.stores.demo.customers.find(c => c.id === "u_1" && c.phone === "0912345678");

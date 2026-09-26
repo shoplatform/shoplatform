@@ -74,7 +74,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.16 · 資料庫已連線" : "v0.16 · 離線示範版"}</div>
+            <div>${remote ? "v0.17 · 資料庫已連線" : "v0.17 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -1700,6 +1700,10 @@
         </div>
       </section>
       <section class="panel">
+        <div class="panel-head"><h2>退換貨政策</h2><span class="small muted">顯示在商店頁尾與結帳頁</span></div>
+        <div class="panel-body"><div class="field"><label for="st-return">政策內容</label><textarea id="st-return" rows="8" maxlength="10000">${esc(st.returnPolicy || "")}</textarea><span class="hint">請依你的商品與營運方式填寫，最多 10,000 個字</span></div></div>
+      </section>
+      <section class="panel">
         <div class="panel-head"><h2>取貨方式</h2><span class="pill warn">物流未串接</span></div>
         <div class="panel-body" style="gap:0">
           ${st.shippingMethods.map((m, i) => `<div class="method-row">
@@ -1740,6 +1744,7 @@
       cur.tagline = document.getElementById("st-tagline").value.trim();
       cur.email = document.getElementById("st-email").value.trim();
       cur.phone = document.getElementById("st-phone").value.trim();
+      cur.returnPolicy = document.getElementById("st-return").value.trim();
       cur.freeShippingThreshold = Math.max(0, Math.floor(+document.getElementById("st-free").value || 0));
       cur.lowStockAlert = Math.max(0, Math.floor(+document.getElementById("st-low").value || 0));
       cur.autoCancelDays = Math.min(30, Math.max(0, Math.floor(+document.getElementById("st-autocancel").value || 0)));
@@ -2440,6 +2445,7 @@
         <form id="gate-form" class="gate-form" novalidate>
           <div class="field"><label for="gate-email">Email</label><input type="email" id="gate-email" autocomplete="username" required></div>
           <div class="field"><label for="gate-pw">密碼</label><input type="password" id="gate-pw" autocomplete="${mode === "login" ? "current-password" : "new-password"}" required>${mode === "login" ? "" : `<span class="hint">至少 8 個字元</span>`}</div>
+          ${mode === "signup" ? `<label class="check"><input type="checkbox" id="gate-agree"> 我已閱讀並同意<a href="#home/terms" target="_blank">服務條款</a>與<a href="#home/privacy" target="_blank">隱私權政策</a></label>` : ""}
           <button class="btn btn-primary" type="submit" style="padding:10px">${mode === "login" ? "登入" : "建立帳號"}</button>
         </form>
         ${forPlatform ? "" : `<button class="btn btn-ghost" id="gate-switch" type="button">${mode === "login" ? "還沒有帳號？免費開店" : "已經有帳號？登入"}</button>`}
@@ -2453,6 +2459,7 @@
         const btn = e.target.querySelector("button[type=submit]");
         if (!email || !pw) return toast("請填寫 Email 和密碼", "error");
         if (mode === "signup" && pw.length < 8) return toast("密碼至少 8 個字元", "error");
+        if (mode === "signup" && !e.target.querySelector("#gate-agree").checked) return toast("請先閱讀並同意服務條款與隱私權政策", "error");
         btn.disabled = true;
         try {
           if (mode === "login") { await DB.admin.login(email, pw); Router.render(); }
