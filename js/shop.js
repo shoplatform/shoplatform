@@ -24,7 +24,9 @@
 
   /* 最上方的公告列：進行中的滿額活動＋免運門檻 */
   function barText(st) {
-    const parts = DB.promotions.active().map(p => `${esc(p.name)}：${esc(DB.promotions.describe(p))}`);
+    const th = window.Theme ? window.Theme.normalize(st.theme) : {};
+    const parts = th.notice ? [esc(th.notice)] : [];
+    parts.push(...DB.promotions.active().map(p => `${esc(p.name)}：${esc(DB.promotions.describe(p))}`));
     if (st.freeShippingThreshold > 0) parts.push(`全館滿 ${money(st.freeShippingThreshold)} 免運`);
     return parts.join('<span class="s-bar-sep" aria-hidden="true">｜</span>');
   }
@@ -89,10 +91,10 @@
     const n = DB.cart.count();
     const user = DB.auth.current();
     root().innerHTML = `
-      <div class="shop">
+      <div class="shop ${themeAttr(st).cls}" style="${themeAttr(st).style}">
         ${barText(st) ? `<div class="s-bar">${barText(st)}</div>` : ""}
         <header class="s-head"><div class="s-wrap">
-          <a class="s-logo" href="#shop">${esc(st.name)}</a>
+          ${logoLink(st)}
           <input type="search" class="s-search" id="s-q" placeholder="搜尋商品" value="${esc(query)}" aria-label="搜尋商品">
           <nav class="s-nav" aria-label="會員">
             ${user ? `<a href="#shop/account">${esc(user.name)}</a>`
@@ -104,7 +106,8 @@
         <main>${content}</main>
         <footer class="s-foot"><div class="s-wrap">
           <span>© ${new Date().getFullYear()} ${esc(st.name)}</span>
-          <span>客服 ${esc(st.email)} · ${esc(st.phone)}</span>
+          <span>客服 ${esc(st.email)}${st.phone ? ` · ${esc(st.phone)}` : ""}</span>
+          ${poweredBy()}
         </div></footer>
       </div>`;
     const q = document.getElementById("s-q");
@@ -113,23 +116,66 @@
     });
   }
 
+  // 佈景主題：配色、版型、字體（theme.js）
+  const themeAttr = st => { if (!window.Theme) return { cls: "", style: "" }; window.Theme.useFont(st.theme); return window.Theme.attrs(st.theme); };
+  const logoLink = st => {
+    const logo = st.theme && st.theme.logo;
+    return logo && logo.url ? `<a class="s-logo has-img" href="#shop"><img src="${esc(logo.url)}" alt="${esc(st.name)}"></a>` : `<a class="s-logo" href="#shop">${esc(st.name)}</a>`;
+  };
+
+  // 頁尾「我也要開店」：帶回平台首頁（正式版才有）
+  const poweredBy = () => DB.mode === "remote"
+    ? `<a class="s-powered" href="${esc(DB.admin.storeUrl(""))}#home">${esc((DB.home.info().platformName) || "開店平台")} · 我也要開店</a>` : "";
+
+  /* ---------- 暫停營業（試用到期、年費到期、被平台停用） ---------- */
+  function viewClosed(msg) {
+    const st = DB.settings.get();
+    root().innerHTML = `
+      <div class="shop ${themeAttr(st).cls}" style="${themeAttr(st).style}">
+        <header class="s-head"><div class="s-wrap"><span class="s-logo">${esc(st.name)}</span>
+          <nav class="s-nav" aria-label="訂單"><a href="#shop/track">訂單查詢</a></nav></div></header>
+        <main><div class="s-wrap s-page s-narrow"><div class="s-box s-closed">
+          <h1>${esc(msg || "這家商店目前休息中")}</h1>
+          <p>暫時無法下單。已經下過的訂單可以用「訂單查詢」看進度${st.email ? `，其他問題請來信 <a href="mailto:${esc(st.email)}">${esc(st.email)}</a>` : ""}。</p>
+          <div><a class="btn" href="#shop/track">查詢訂單</a></div>
+        </div></div></main>
+        <footer class="s-foot"><div class="s-wrap"><span>© ${new Date().getFullYear()} ${esc(st.name)}</span>${poweredBy()}</div></footer>
+      </div>`;
+  }
+
   /* ---------- 首頁 / 分類 ---------- */
   function viewHome(categoryId) {
     const st = DB.settings.get();
     const cats = DB.categories.list().filter(c => DB.products.list({ categoryId: c.id, status: "active" }).length);
     const list = DB.products.list({ q: query, categoryId: categoryId || "", status: "active" });
     const cur = cats.find(c => c.id === categoryId);
+    const th = window.Theme ? window.Theme.normalize(st.theme) : { layout: "grid" };
+    const front = !cur && !query;   // 首頁（不是分類頁、搜尋結果）才套用版型
+    const banner = front && th.layout === "banner";
+    const feature = front && th.layout === "magazine" && list.length > 1 ? list[0] : null;
+    const gridList = feature ? list.slice(1) : list;
     shell(`
-      <div class="s-wrap">
-        <section class="s-hero">
-          <h1>${cur ? esc(cur.name) : query ? `搜尋「${esc(query)}」` : esc(st.name)}</h1>
-          <p>${cur || query ? `共 ${list.length} 件商品` : esc(st.tagline)}</p>
-        </section>
+      ${banner ? `<section class="s-banner"><div class="s-wrap">
+        <h1>${esc(th.heroTitle || st.name)}</h1>
+        ${th.heroText || st.tagline ? `<p>${esc(th.heroText || st.tagline)}</p>` : ""}
+        <button class="btn" type="button" id="s-to-all">逛逛商品</button>
+      </div></section>` : ""}
+      <div class="s-wrap" id="s-all">
+        ${banner ? "" : `<section class="s-hero">
+          <h1>${cur ? esc(cur.name) : query ? `搜尋「${esc(query)}」` : esc(front && th.heroTitle ? th.heroTitle : st.name)}</h1>
+          <p>${cur || query ? `共 ${list.length} 件商品` : esc(front && th.heroText ? th.heroText : st.tagline)}</p>
+        </section>`}
         <nav class="s-cats" aria-label="商品分類">
           <a href="#shop" class="${!categoryId && !query ? "is-on" : ""}" data-clear="1">全部</a>
           ${cats.map(c => `<a href="#shop/c/${c.id}" class="${categoryId === c.id ? "is-on" : ""}">${esc(c.name)}</a>`).join("")}
         </nav>
-        ${list.length ? `<div class="s-grid">${list.map(p => {
+        ${feature ? `<a class="s-feature" href="#shop/p/${feature.id}">
+          ${img(feature)}
+          <div><span class="s-kicker">本週主打</span><h2>${esc(feature.name)}</h2>
+            ${feature.description ? `<p>${esc(feature.description)}</p>` : ""}
+            <span class="s-price">${priceText(feature)}</span><span class="btn btn-primary">看商品</span></div>
+        </a>` : ""}
+        ${gridList.length ? `<div class="s-grid">${gridList.map(p => {
           const out = DB.products.totalStock(p) === 0;
           return `<a class="s-card" href="#shop/p/${p.id}">
             <div style="position:relative">${out ? `<span class="s-soldout">售完</span>` : ""}${img(p)}</div>
@@ -139,6 +185,8 @@
         }).join("")}</div>` : `<div class="empty">找不到符合的商品</div>`}
       </div>`);
     root().querySelectorAll("[data-clear]").forEach(a => a.addEventListener("click", () => { query = ""; }));
+    const toAll = document.getElementById("s-to-all");
+    if (toAll) toAll.addEventListener("click", () => document.getElementById("s-all").scrollIntoView({ behavior: "smooth" }));
   }
 
   /* ---------- 商品頁 ---------- */
@@ -318,6 +366,7 @@
             </section>
             <section class="s-box">
               <div class="field"><label for="co-note">備註（選填）</label><textarea id="co-note" rows="2">${esc(form.note)}</textarea></div>
+              <div class="hp" aria-hidden="true"><label for="co-web">網站（請留空）</label><input type="text" id="co-web" name="website" tabindex="-1" autocomplete="off"></div>
             </section>
           </div>
           <aside class="s-box" id="co-sum"></aside>
@@ -376,7 +425,7 @@
         const o = await DB.orders.create({
           contact: { name: form.name, phone: form.phone, email: form.email },
           shipping: { methodId: form.ship, address: form.address, storeName: form.storeName },
-          paymentMethodId: form.pay, note: form.note,
+          paymentMethodId: form.pay, note: form.note, hp: (document.getElementById("co-web") || {}).value || "",
         });
         form.note = "";
         Router.go("shop/done/" + o.number);
@@ -849,6 +898,8 @@
 
   window.ShopApp = function (parts) {
     const [, page, arg] = parts;
+    const cs = DB.shopState ? DB.shopState() : { closed: false };
+    if (cs.closed && page !== "track" && page !== "order") return viewClosed(cs.message);
     switch (page) {
       case undefined: return viewHome();
       case "c": return viewHome(arg);

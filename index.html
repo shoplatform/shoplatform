@@ -12,22 +12,20 @@
   <link rel="stylesheet" href="css/shop.css">
 </head>
 <body>
-  <!-- 開發用切換列：之後正式上線時，前台與後台會拆成不同網址 -->
-  <div class="devbar">
-    <b>DEV</b>
-    <a href="#admin" data-side="admin">商家後台</a>
-    <a href="#shop" data-side="shop">商店前台</a>
-  </div>
   <div id="app"></div>
 
-  <!-- 正式版：資料存在 Supabase 資料庫。離線示範版請開 demo.html -->
+  <!-- 正式版：資料存在 Supabase 資料庫。
+       網址：平台首頁（不帶參數）、商店前台 ?store=<代號>、商家後台 #admin、平台總控台 #platform
+       離線示範版請開 demo.html -->
   <script src="js/config.js"></script>
   <script src="js/vendor/supabase.js"></script>
   <script src="js/db.js"></script>
   <script src="js/ui.js"></script>
+  <script src="js/theme.js"></script>
   <script src="js/xlsx.js"></script>
   <script src="js/admin.js"></script>
   <script src="js/shop.js"></script>
+  <script src="js/platform.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

@@ -186,3 +186,57 @@
   .s-steps li b { font-size: 12px; }
   .s-wrap { padding-inline: 16px; }
 }
+
+/* v0.9：暫停營業、平台連結 */
+.s-closed { text-align: center; justify-items: center; }
+.s-closed p { color: var(--s-muted); margin: 0; }
+.s-powered { color: inherit; opacity: .7; text-decoration: none; font-size: 12px; }
+.s-powered:hover { opacity: 1; text-decoration: underline; }
+/* v0.10：防機器人的隱藏欄位（真人看不到、不會填） */
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+
+/* ---------- v0.12：佈景主題（顏色由 theme.js 算好放在 --l-* 淺色、--d-* 深色） ---------- */
+.shop.themed {
+  --s-bg: var(--l-bg); --s-surface: var(--l-surface); --s-ink: var(--l-ink); --s-muted: var(--l-muted); --s-line: var(--l-line);
+  --s-accent: var(--l-accent); --s-accent-ink: var(--l-accent-ink); --s-soft: var(--l-soft);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shop.themed {
+    --s-bg: var(--d-bg); --s-surface: var(--d-surface); --s-ink: var(--d-ink); --s-muted: var(--d-muted); --s-line: var(--d-line);
+    --s-accent: var(--d-accent); --s-accent-ink: var(--d-accent-ink); --s-soft: var(--d-soft);
+  }
+}
+:root[data-theme="dark"] .shop.themed {
+  --s-bg: var(--d-bg); --s-surface: var(--d-surface); --s-ink: var(--d-ink); --s-muted: var(--d-muted); --s-line: var(--d-line);
+  --s-accent: var(--d-accent); --s-accent-ink: var(--d-accent-ink); --s-soft: var(--d-soft);
+}
+.shop.font-serif, .shop.font-serif input, .shop.font-serif button, .shop.font-serif textarea, .shop.font-serif select { font-family: "Noto Serif TC", "PMingLiU", serif; }
+.shop.cols-3 .s-grid { grid-template-columns: repeat(3, 1fr); }
+.shop.cols-2 .s-grid { grid-template-columns: repeat(2, 1fr); gap: 28px; }
+.shop.ratio-portrait .s-card .s-img { aspect-ratio: 4 / 5; }
+.s-logo.has-img { display: inline-flex; align-items: center; }
+.s-logo.has-img img { display: block; max-height: 40px; max-width: 180px; width: auto; object-fit: contain; }
+
+/* 大橫幅 */
+.s-banner { background: var(--s-accent); color: var(--s-accent-ink); }
+.s-banner .s-wrap { padding-block: 56px 52px; display: grid; gap: 12px; justify-items: start; }
+.s-banner h1 { font-size: clamp(26px, 5vw, 42px); letter-spacing: .04em; line-height: 1.25; }
+.s-banner p { margin: 0; max-width: 34em; opacity: .88; font-size: 16px; }
+.shop .s-banner .btn { background: var(--s-accent-ink); color: var(--s-accent); border-color: var(--s-accent-ink); margin-top: 8px; padding: 10px 22px; }
+.s-banner + .s-wrap { padding-top: 26px; }
+
+/* 雜誌風：第一個商品放大 */
+.s-feature { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: center; background: var(--s-surface); border: 1px solid var(--s-line); border-radius: 6px; padding: 18px; margin-bottom: 28px; text-decoration: none; color: var(--s-ink) !important; }
+.s-feature .s-img { aspect-ratio: 4 / 3; }
+.s-feature .s-kicker { font-size: 12px; letter-spacing: .12em; color: var(--s-accent); }
+.s-feature h2 { font-size: clamp(20px, 3vw, 28px); margin: 6px 0 10px; }
+.s-feature p { margin: 0 0 14px; color: var(--s-muted); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.s-feature .s-price { font-family: var(--mono); font-size: 16px; margin-bottom: 14px; display: block; }
+@media (max-width: 700px) {
+  .s-feature { grid-template-columns: 1fr; gap: 14px; }
+  .shop.shop .s-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .s-banner .s-wrap { padding-block: 36px; }
+}
+/* 深色模式：Logo 多半是深色字，墊一塊淺色底才看得到 */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .s-logo.has-img img { background: #f4f1ec; padding: 3px 8px; border-radius: 6px; } }
+:root[data-theme="dark"] .s-logo.has-img img { background: #f4f1ec; padding: 3px 8px; border-radius: 6px; }

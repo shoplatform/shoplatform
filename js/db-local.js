@@ -135,6 +135,17 @@
       if (bmp.close) bmp.close();
       return { id: uid("img"), url: out.url, width: out.width, height: out.height, name: file.name };
     },
+    // Logo：保留透明背景（PNG），長邊最多 480px
+    async prepareLogo(file) {
+      if (!file || !media.ACCEPT.includes(file.type)) throw new Error("Logo 要是 JPG、PNG、WebP 圖片");
+      if (file.size > 5 * 1024 * 1024) throw new Error("Logo 檔案太大（上限 5MB）");
+      const bmp = await decode(file);
+      const w0 = bmp.width || bmp.naturalWidth, h0 = bmp.height || bmp.naturalHeight, k = Math.min(1, 480 / Math.max(w0, h0));
+      const cv = document.createElement("canvas"); cv.width = Math.max(1, Math.round(w0 * k)); cv.height = Math.max(1, Math.round(h0 * k));
+      cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+      if (bmp.close) bmp.close();
+      return { url: cv.toDataURL("image/png"), width: cv.width, height: cv.height };
+    },
     usage() {
       let used = 0;
       try { used = (localStorage.getItem(KEY) || "").length; } catch (e) { /* 無法讀取時當作 0 */ }
@@ -877,6 +888,11 @@
       return out;
     },
     byCustomer: id => clone(S().orders.filter(o => o.customerId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))),
+    // 跟資料庫版一樣的分頁介面（示範版資料都在瀏覽器裡，直接篩選）
+    async query(filter = {}, { offset = 0, limit = 50 } = {}) { const all = orders.list(filter); return { total: all.length, rows: all.slice(offset, offset + limit) }; },
+    async fetch(id) { return orders.get(id); },
+    async ofCustomer(id) { return orders.byCustomer(id); },
+    window: () => ({ loaded: S().orders.length, total: S().orders.length, days: 0 }),
 
     /* 消費者結帳：檢查庫存 → 扣庫存 → 建會員 → 建訂單 */
     create({ contact, shipping, paymentMethodId, note }) {
@@ -1056,15 +1072,72 @@
     return H.map(x => (x >>> 0).toString(16).padStart(8, "0")).join("");
   }
 
+
+  /* ---------- 報表（跟資料庫版 admin_report 一樣的結果格式） ---------- */
+  const PAID = ["paid", "shipped", "completed"];
+  const ymdLocal = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+  const reports = {
+    async get(from, to) {
+      if (!from || !to) throw new Error("請選擇日期區間");
+      if (to < from) throw new Error("結束日期不能早於開始日期");
+      const days = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+      if (days > 1100) throw new Error("一次最多查 3 年");
+      const unit = days <= 62 ? "day" : "month";
+      const inRange = o => { const d = ymdLocal(o.createdAt); return d >= from && d <= to; };
+      const all = S().orders, o = all.filter(inRange);
+      const paid = o.filter(x => PAID.includes(x.status));
+      const who = x => x.customerId || "p:" + x.contact.phone;
+      const costOf = x => x.items.reduce((a, i) => a + i.qty * (i.cost || 0), 0);
+      const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+      const firsts = {};
+      all.filter(x => PAID.includes(x.status)).forEach(x => { const d = ymdLocal(x.createdAt), k = who(x); if (!firsts[k] || d < firsts[k]) firsts[k] = d; });
+      const whos = [...new Set(paid.map(who))];
+      const key = d => (unit === "day" ? d : d.slice(0, 7) + "-01");
+      const series = [];
+      for (let t = new Date((unit === "day" ? from : from.slice(0, 7) + "-01") + "T00:00:00"); ymdLocal(t) <= to; unit === "day" ? t.setDate(t.getDate() + 1) : t.setMonth(t.getMonth() + 1)) {
+        const b = ymdLocal(t), inB = paid.filter(x => key(ymdLocal(x.createdAt)) === b);
+        series.push({ date: b, revenue: sum(inB, x => x.total), orders: inB.length, gross: sum(inB, x => x.subtotal - x.discount - costOf(x)) });
+      }
+      const group = (arr, k, f) => { const m = {}; arr.forEach(x => { const kk = k(x); m[kk] = f(m[kk], x); }); return Object.values(m); };
+      const lines = paid.flatMap(x => x.items.map(i => Object.assign({ oid: x.id }, i)));
+      const products = group(lines, i => i.productId, (a, i) => { a = a || { productId: i.productId, name: i.name, qty: 0, sales: 0, cost: 0, oids: new Set() };
+        a.qty += i.qty; a.sales += i.qty * i.price; a.cost += i.qty * (i.cost || 0); a.oids.add(i.oid); return a; })
+        .map(a => ({ productId: a.productId, name: a.name, qty: a.qty, sales: a.sales, cost: a.cost, orders: a.oids.size })).sort((a, b) => b.sales - a.sales).slice(0, 50);
+      const variants = group(lines, i => i.variantId, (a, i) => { a = a || { variantId: i.variantId, name: i.name, optionText: i.optionText, sku: i.sku, qty: 0, sales: 0 };
+        a.qty += i.qty; a.sales += i.qty * i.price; return a; }).sort((a, b) => b.qty - a.qty).slice(0, 50);
+      const payments = group(paid, x => x.payment.methodName, (a, x) => { a = a || { name: x.payment.methodName, orders: 0, amount: 0 }; a.orders++; a.amount += x.total; return a; }).sort((a, b) => b.amount - a.amount);
+      const shippings = group(paid, x => x.shipping.methodName, (a, x) => { a = a || { name: x.shipping.methodName, orders: 0, amount: 0 }; a.orders++; a.amount += x.shippingFee; return a; }).sort((a, b) => b.orders - a.orders);
+      const dl = paid.flatMap(x => x.discounts || []);
+      const LBL = d => d.kind === "coupon" ? "優惠碼 " + d.code : d.kind === "promo" ? "滿額活動" : d.kind === "member" ? "會員等級" : d.kind;
+      const discounts = group(dl, d => d.kind + LBL(d), (a, d) => { a = a || { kind: d.kind, label: LBL(d), orders: 0, amount: 0 }; a.orders++; a.amount += d.amount; return a; }).sort((a, b) => b.amount - a.amount);
+      const moves = S().movements.filter(m => m.type === "purchase" && ymdLocal(m.at) >= from && ymdLocal(m.at) <= to).map(m => {
+        const po = S().purchases.find(x => x.number === m.ref); const it = po && po.items.find(i => i.variantId === m.variantId);
+        return { delta: m.delta, cost: it ? it.cost : 0, supplier: po ? po.supplierName : "" };
+      });
+      return clone({
+        from, to, unit,
+        summary: { orders: paid.length, revenue: sum(paid, x => x.total), goods: sum(paid, x => x.subtotal), discount: sum(paid, x => x.discount),
+          shipping: sum(paid, x => x.shippingFee), cost: sum(paid, costOf), gross: sum(paid, x => x.subtotal - x.discount - costOf(x)),
+          customers: whos.length, newCustomers: whos.filter(k => firsts[k] >= from).length, units: sum(lines, i => i.qty) },
+        pending: { orders: o.filter(x => x.status === "pending_payment").length, amount: sum(o.filter(x => x.status === "pending_payment"), x => x.total) },
+        cancelled: { orders: o.filter(x => x.status === "cancelled").length, amount: sum(o.filter(x => x.status === "cancelled"), x => x.total) },
+        series, products, variants, payments, shippings, discounts,
+        purchases: { units: sum(moves, m => m.delta), amount: sum(moves, m => m.delta * m.cost),
+          bySupplier: group(moves, m => m.supplier, (a, m) => { a = a || { name: m.supplier || null, units: 0, amount: 0 }; a.units += m.delta; a.amount += m.delta * m.cost; return a; }).sort((a, b) => b.amount - a.amount) },
+      });
+    },
+  };
+
   // 跟 db.js（資料庫版）對齊的介面：示範版功能全開、不用登入
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: true };
+  const features = { members: true, images: true, inventory: true, tiers: true, reset: true, platform: false };
   const ready = async () => ({ state: "ok" });
-  const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}) };
+  const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
+    stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0] };
 
   window.DB = {
-    mode: "local", features, ready, admin, takeNotice: () => null,
+    mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases,
+    inventory, suppliers, purchases, reports,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

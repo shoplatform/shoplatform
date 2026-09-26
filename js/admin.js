@@ -25,6 +25,7 @@
     const c = DB.orders.countByStatus();
     const pc = DB.purchases.countByStatus();
     const poOpen = pc.ordered + pc.partial; // 待入庫的進貨單
+    const remote = DB.mode === "remote";
     const link = (href, key, label, badge) =>
       `<a href="#${href}" class="${active === key ? "is-on" : ""}">${label}${badge ? `<span class="badge">${badge}</span>` : ""}</a>`;
     root().innerHTML = `
@@ -36,6 +37,7 @@
             <div class="sep">銷售</div>
             ${link("admin/orders", "orders", "訂單", c.paid || "")}
             ${link("admin/customers", "customers", "會員")}
+            ${link("admin/reports", "reports", "報表")}
             <div class="sep">商品</div>
             ${link("admin/products", "products", "商品")}
             ${link("admin/categories", "categories", "分類")}
@@ -48,18 +50,342 @@
             ${link("admin/promotions", "promotions", "滿額活動")}
             ${DB.features.tiers ? link("admin/tiers", "tiers", "會員等級") : ""}
             <div class="sep">商店</div>
+            ${link("admin/theme", "theme", "外觀")}
             ${link("admin/settings", "settings", "設定")}
           </nav>
           <div class="side-foot">
-            <div>${DB.mode === "remote" ? "v0.8 · 資料庫已連線" : "v0.8 · 離線示範版"}</div>
+            ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
+            <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
+            ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
+            <div>${remote ? "v0.12 · 資料庫已連線" : "v0.12 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}</div>` : ""}
-            ${DB.mode === "remote" ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
+            ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
         </aside>
-        <main class="main" id="main">${content}</main>
+        <main class="main" id="main">${remote ? window.Billing.banner(DB.admin.billing(), DB.admin.platformInfo(), active) : ""}${content}</main>
       </div>`;
     const out = document.getElementById("side-logout");
     if (out) out.addEventListener("click", async () => { await DB.admin.logout(); toast("已登出"); Router.go("admin"); });
+  }
+
+
+
+  /* ---------- 外觀（佈景主題） ---------- */
+  function viewTheme() {
+    const T = window.Theme, st = DB.settings.get();
+    const t = T.normalize(st.theme);
+    const sample = DB.products.list({ status: "active" }).slice(0, 4);
+    const radio = (name, val, label, extra) => `<label class="opt-card ${String(t[name]) === String(val) ? "is-on" : ""}"><input type="radio" name="th-${name}" value="${val}" ${String(t[name]) === String(val) ? "checked" : ""}>${label}${extra || ""}</label>`;
+    shell("theme", `
+      <div class="page-head"><h1>外觀</h1><div class="actions">
+        ${DB.mode === "remote" ? `<a class="btn" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">看前台 ↗</a>` : `<a class="btn" href="#shop">看前台</a>`}
+        <button class="btn btn-primary" id="th-save" type="button">儲存外觀</button></div></div>
+      <div class="th-layout">
+        <div class="th-form">
+          <section class="panel"><div class="panel-head"><h2>配色</h2></div><div class="panel-body">
+            <div class="opt-grid">${Object.entries(T.PRESETS).map(([k, p]) => radio("preset", k, `<span class="sw">${[p.light.bg, p.light.accent, p.light.soft].map(c => `<i style="background:${c}"></i>`).join("")}</span><b>${p.name}</b>`)).join("")}</div>
+            <label class="check"><input type="checkbox" id="th-custom" ${t.accent ? "checked" : ""}> 自訂主色（按鈕、連結、橫幅的顏色）</label>
+            <div class="th-accent" ${t.accent ? "" : "hidden"}><input type="color" id="th-accent" value="${t.accent || T.PRESETS[t.preset].light.accent}" aria-label="主色"><span class="mono small" id="th-accent-hex"></span><span class="small" id="th-contrast" role="status"></span></div>
+            <p class="small muted" style="margin:0">深色模式會自動換成同色系、比較亮的版本，按鈕上的字會自動選白色或黑色。</p>
+          </div></section>
+          <section class="panel"><div class="panel-head"><h2>Logo</h2></div><div class="panel-body">
+            <div class="th-logo"><div class="th-logo-box" id="th-logo-box"></div>
+              <div class="actions"><label class="btn btn-sm" for="th-logo-file">上傳 Logo</label><input type="file" id="th-logo-file" accept="image/png,image/jpeg,image/webp" hidden>
+              <button class="btn btn-sm btn-ghost" type="button" id="th-logo-del">移除</button></div></div>
+            <p class="small muted" style="margin:0">建議用橫式、透明背景的 PNG。前台會縮成 40px 高；沒有 Logo 就顯示店名。</p>
+          </div></section>
+          <section class="panel"><div class="panel-head"><h2>首頁版型</h2></div><div class="panel-body">
+            <div class="opt-grid is-3">${T.LAYOUTS.map(([k, name, desc]) => radio("layout", k, `<span class="mini mini-${k}" aria-hidden="true"><i></i><i></i><i></i><i></i></span><b>${name}</b><span class="small muted">${desc}</span>`)).join("")}</div>
+            <div class="grid-form">
+              <div class="field"><label for="th-title">首頁標題</label><input type="text" id="th-title" maxlength="40" value="${esc(t.heroTitle)}" placeholder="${esc(st.name)}"><span class="hint">留空就用店名</span></div>
+              <div class="field"><label for="th-text">首頁說明</label><input type="text" id="th-text" maxlength="120" value="${esc(t.heroText)}" placeholder="${esc(st.tagline || "一句話介紹你的店")}"><span class="hint">留空就用「一句話介紹」</span></div>
+            </div>
+          </div></section>
+          <section class="panel"><div class="panel-head"><h2>商品排列與字體</h2></div><div class="panel-body">
+            <div class="th-row"><span class="small muted">每列商品（電腦）</span><div class="seg">${[2, 3, 4].map(n => `<button type="button" data-cols="${n}" class="${t.cols === n ? "is-on" : ""}" aria-pressed="${t.cols === n}">${n} 個</button>`).join("")}</div></div>
+            <div class="th-row"><span class="small muted">商品圖片比例</span><div class="seg"><button type="button" data-ratio="square" class="${t.ratio === "square" ? "is-on" : ""}">方形 1:1</button><button type="button" data-ratio="portrait" class="${t.ratio === "portrait" ? "is-on" : ""}">直式 4:5</button></div></div>
+            <div class="th-row"><span class="small muted">字體</span><div class="seg"><button type="button" data-font="sans" class="${t.font === "sans" ? "is-on" : ""}">黑體（俐落）</button><button type="button" data-font="serif" class="${t.font === "serif" ? "is-on" : ""}" style="font-family:'Noto Serif TC',serif">明體（典雅）</button></div></div>
+            <div class="field"><label for="th-notice">最上方公告列（選填）</label><input type="text" id="th-notice" maxlength="80" value="${esc(t.notice)}" placeholder="例如：週年慶全館 9 折，到 10/31"><span class="hint">會跟滿額活動、免運門檻一起顯示</span></div>
+          </div></section>
+        </div>
+        <div class="th-side"><div class="th-sticky">
+          <div class="small muted">預覽（跟著電腦的淺色／深色模式）</div>
+          <div class="th-preview" id="th-preview"></div>
+        </div></div>
+      </div>`);
+    const $ = id => document.getElementById(id);
+    const cur = () => Object.assign({}, t, {
+      preset: (document.querySelector('input[name="th-preset"]:checked') || {}).value || t.preset,
+      layout: (document.querySelector('input[name="th-layout"]:checked') || {}).value || t.layout,
+      accent: $("th-custom").checked ? $("th-accent").value : "",
+      heroTitle: $("th-title").value.trim(), heroText: $("th-text").value.trim(), notice: $("th-notice").value.trim(),
+    });
+    const draw = () => {
+      const v = cur(), a = T.attrs(v); T.useFont(v);
+      document.querySelectorAll(".opt-card").forEach(l => l.classList.toggle("is-on", l.querySelector("input").checked));
+      $("th-accent-hex").textContent = v.accent;
+      if (v.accent) {
+        const c = T.check(v);
+        $("th-contrast").textContent = c.ok ? `對比 ${c.ratio.toFixed(1)}：清楚` : c.weak ? `對比 ${c.ratio.toFixed(1)}：偏淡，連結文字可能不好讀` : `對比 ${c.ratio.toFixed(1)}：太淡，連結和按鈕會看不清楚，建議選深一點`;
+        $("th-contrast").className = "small " + (c.ok ? "is-ok" : "is-bad");
+      }
+      $("th-logo-box").innerHTML = v.logo ? `<img src="${esc(v.logo.url)}" alt="目前的 Logo">` : `<span class="small muted">還沒有 Logo</span>`;
+      $("th-logo-del").hidden = !v.logo;
+      const cards = (sample.length ? sample : [{ name: "商品", color: "#b7a38b", variants: [{ price: 0 }] }]).slice(0, v.layout === "magazine" ? 4 : 3);
+      const imgOf = p => { const src = p.id ? DB.products.cover(p) : ""; return `<div class="s-img ${src ? "has-photo" : ""}" style="${src ? "" : `background:${esc(p.color)}`}">${src ? `<img src="${esc(src)}" alt="">` : esc(p.name.slice(0, 1))}</div>`; };
+      const card = p => `<div class="s-card">${imgOf(p)}<span class="s-name">${esc(p.name)}</span></div>`;
+      const title = esc(v.heroTitle || st.name), text = esc(v.heroText || st.tagline || "");
+      $("th-preview").innerHTML = `<div class="shop ${a.cls}" style="${a.style}">
+        ${v.notice ? `<div class="s-bar">${esc(v.notice)}</div>` : ""}
+        <header class="s-head"><div class="s-wrap">${v.logo ? `<span class="s-logo has-img"><img src="${esc(v.logo.url)}" alt=""></span>` : `<span class="s-logo">${esc(st.name)}</span>`}<span class="s-cart">購物車 <b>1</b></span></div></header>
+        ${v.layout === "banner" ? `<section class="s-banner"><div class="s-wrap"><h1>${title}</h1>${text ? `<p>${text}</p>` : ""}<span class="btn">逛逛商品</span></div></section>`
+          : `<div class="s-wrap"><section class="s-hero"><h1>${title}</h1><p>${text}</p></section></div>`}
+        <div class="s-wrap">
+          ${v.layout === "magazine" ? `<div class="s-feature">${imgOf(cards[0])}<div><span class="s-kicker">本週主打</span><h2>${esc(cards[0].name)}</h2><span class="btn btn-primary">看商品</span></div></div>` : ""}
+          <div class="s-grid">${(v.layout === "magazine" ? cards.slice(1) : cards).map(card).join("")}</div>
+        </div></div>`;
+    };
+    draw();
+    document.querySelectorAll('input[name="th-preset"]').forEach(r => r.addEventListener("change", () => { if (!$("th-custom").checked) $("th-accent").value = T.PRESETS[r.value].light.accent; draw(); }));
+    document.querySelectorAll('input[name="th-layout"]').forEach(r => r.addEventListener("change", draw));
+    $("th-custom").addEventListener("change", () => { document.querySelector(".th-accent").hidden = !$("th-custom").checked; draw(); });
+    ["th-accent", "th-title", "th-text", "th-notice"].forEach(id => $(id).addEventListener("input", draw));
+    const seg = (attr, key, conv) => document.querySelectorAll(`[data-${attr}]`).forEach(b => b.addEventListener("click", () => {
+      t[key] = conv(b.dataset[attr]);
+      document.querySelectorAll(`[data-${attr}]`).forEach(x => { x.classList.toggle("is-on", x === b); x.setAttribute("aria-pressed", x === b); });
+      draw();
+    }));
+    seg("cols", "cols", Number); seg("ratio", "ratio", String); seg("font", "font", String);
+    $("th-logo-file").addEventListener("change", async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const lbl = document.querySelector('label[for="th-logo-file"]'); lbl.textContent = "上傳中…";
+      try { t.logo = await DB.media.prepareLogo(f); draw(); toast("Logo 已上傳，記得按「儲存外觀」"); }
+      catch (err) { toast(err.message, "error"); }
+      lbl.textContent = "上傳 Logo"; e.target.value = "";
+    });
+    $("th-logo-del").addEventListener("click", () => { t.logo = null; draw(); });
+    $("th-save").addEventListener("click", async e => {
+      const v = cur();
+      const c = v.accent ? T.check(v) : { ok: true, weak: false };
+      if (!c.ok && !c.weak && !(await confirmBox({ title: "主色太淡", body: "這個顏色在白底上很難看清楚，顧客可能看不到按鈕和連結。確定要用嗎？", ok: "還是要用" }))) return;
+      e.target.disabled = true;
+      try { await DB.settings.update({ theme: v }); toast("已儲存外觀"); viewTheme(); }
+      catch (err) { toast(err.message, "error"); e.target.disabled = false; }
+    });
+  }
+
+  /* ---------- 報表（銷售、毛利、熱銷、進貨） ---------- */
+  const pad2 = n => String(n).padStart(2, "0");
+  const ymdOf = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const RANGES = [["7d", "近 7 天"], ["30d", "近 30 天"], ["month", "本月"], ["lastmonth", "上個月"], ["90d", "近 90 天"], ["year", "今年"], ["custom", "自訂"]];
+  let rRange = "30d", rFrom = "", rTo = "";
+  function rangeDates(k) {
+    const t = new Date(); t.setHours(0, 0, 0, 0);
+    const back = n => { const d = new Date(t); d.setDate(d.getDate() - n); return d; };
+    switch (k) {
+      case "7d": return [ymdOf(back(6)), ymdOf(t)];
+      case "90d": return [ymdOf(back(89)), ymdOf(t)];
+      case "month": return [ymdOf(new Date(t.getFullYear(), t.getMonth(), 1)), ymdOf(t)];
+      case "lastmonth": return [ymdOf(new Date(t.getFullYear(), t.getMonth() - 1, 1)), ymdOf(new Date(t.getFullYear(), t.getMonth(), 0))];
+      case "year": return [ymdOf(new Date(t.getFullYear(), 0, 1)), ymdOf(t)];
+      case "custom": return [rFrom || ymdOf(back(29)), rTo || ymdOf(t)];
+      default: return [ymdOf(back(29)), ymdOf(t)];
+    }
+  }
+  const pct = (a, b) => (b ? (a / b * 100).toFixed(1) + "%" : "—");
+  const slash = d => String(d).replace(/-/g, "/");
+
+  async function viewReports() {
+    const [from, to] = rangeDates(rRange);
+    shell("reports", `
+      <div class="page-head"><h1>報表</h1><div class="actions"><button class="btn" id="rp-export" type="button" disabled>匯出 Excel</button></div></div>
+      <div class="rp-bar">
+        <div class="seg" role="group" aria-label="期間">${RANGES.map(([k, t]) => `<button type="button" class="${rRange === k ? "is-on" : ""}" data-range="${k}" aria-pressed="${rRange === k}">${t}</button>`).join("")}</div>
+        <div class="rp-dates" ${rRange === "custom" ? "" : "hidden"}><input type="date" id="rp-from" value="${from}" aria-label="開始日期"><span class="muted">～</span><input type="date" id="rp-to" value="${to}" aria-label="結束日期"><button class="btn btn-sm" id="rp-go" type="button">查詢</button></div>
+        <span class="small muted">${slash(from)} ～ ${slash(to)}・營收只算已付款的訂單</span>
+      </div>
+      <div id="rp-body"><div class="panel"><div class="empty">計算中…</div></div></div>`);
+    document.querySelectorAll("[data-range]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.range === "custom") { const [f, t] = rangeDates(rRange); rFrom = f; rTo = t; }
+      rRange = b.dataset.range; viewReports();
+    }));
+    const go = document.getElementById("rp-go");
+    if (go) go.addEventListener("click", () => { rFrom = document.getElementById("rp-from").value; rTo = document.getElementById("rp-to").value; viewReports(); });
+    let R;
+    try { R = await DB.reports.get(from, to); }
+    catch (err) { const el = document.getElementById("rp-body"); if (el) el.innerHTML = `<div class="panel"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    const body = document.getElementById("rp-body");
+    if (!body) return;
+    const S = R.summary, net = S.goods - S.discount;
+    const unitLabel = R.unit === "day" ? "每日" : "每月";
+    const small = (title, rows, cols) => `<section class="panel"><div class="panel-head"><h2>${title}</h2></div>${rows.length ? `<div class="table-wrap"><table class="tbl">
+      <thead><tr>${cols.map(c => `<th class="${c[2] || ""}">${c[0]}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c[2] || ""}">${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty">這段期間沒有資料</div>`}</section>`;
+    body.innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><span>營收（已付款）</span><strong>${money(S.revenue)}</strong><small>${S.orders} 筆訂單・${S.units} 件</small></div>
+        <div class="kpi"><span>毛利</span><strong>${money(S.gross)}</strong><small>毛利率 ${pct(S.gross, net)}</small></div>
+        <div class="kpi"><span>平均客單</span><strong>${money(S.orders ? S.revenue / S.orders : 0)}</strong><small>含運費</small></div>
+        <div class="kpi"><span>購買顧客</span><strong>${S.customers}</strong><small>新客 ${S.newCustomers}・回購 ${S.customers - S.newCustomers}</small></div>
+      </div>
+      <div class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><h2>${unitLabel}營收</h2><span class="small muted">移到長條上看明細</span></div>
+          <div class="panel-body rp-chart-wrap">${reportChart(R.series, R.unit)}</div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>金額怎麼來的</h2></div>
+          <div class="panel-body"><dl class="calc">
+            <dt>商品金額</dt><dd>${money(S.goods)}</dd>
+            <dt>− 折扣</dt><dd>${money(S.discount)}</dd>
+            <dt>− 商品成本</dt><dd>${money(S.cost)}</dd>
+            <dt class="is-total">＝ 毛利</dt><dd class="is-total">${money(S.gross)}</dd>
+            <dt>＋ 運費收入</dt><dd>${money(S.shipping)}</dd>
+            <dt class="is-total">營收</dt><dd class="is-total">${money(S.revenue)}</dd>
+          </dl>
+          <p class="small muted" style="margin:0">成本用下單當時的平均成本。另外：待付款 ${R.pending.orders} 筆（${money(R.pending.amount)}）、已取消 ${R.cancelled.orders} 筆（${money(R.cancelled.amount)}），不算進營收。</p></div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><h2>熱銷商品</h2><span class="small muted">依銷售額；毛利未扣整筆訂單的折扣</span></div>
+        ${R.products.length ? `<div class="table-wrap"><table class="tbl">
+          <thead><tr><th>#</th><th>商品</th><th class="r">件數</th><th class="r">訂單數</th><th class="r">銷售額</th><th class="r">成本</th><th class="r">毛利</th><th class="r">毛利率</th><th>占營業額</th></tr></thead>
+          <tbody>${R.products.slice(0, 20).map((x, i) => `<tr ${DB.products.get(x.productId) ? `class="is-link" data-href="admin/product/${x.productId}"` : ""}>
+            <td class="num muted">${i + 1}</td><td>${esc(x.name)}</td><td class="r num">${x.qty}</td><td class="r num">${x.orders}</td><td class="r num">${money(x.sales)}</td>
+            <td class="r num">${money(x.cost)}</td><td class="r num">${money(x.sales - x.cost)}</td><td class="r num">${pct(x.sales - x.cost, x.sales)}</td>
+            <td><div class="share" role="img" aria-label="${pct(x.sales, S.goods)}"><i style="width:${S.goods ? Math.max(1, x.sales / S.goods * 100) : 0}%"></i></div></td></tr>`).join("")}</tbody>
+        </table></div>` : `<div class="empty">這段期間沒有已付款的訂單</div>`}
+      </section>
+      <div class="grid-3">
+        ${small("熱銷規格", R.variants.slice(0, 10), [["規格", r => `${esc(r.name)}<div class="small muted">${esc(r.optionText || "單一規格")}${r.sku ? ` · ${esc(r.sku)}` : ""}</div>`], ["件數", r => r.qty, "r num"]])}
+        ${small("付款方式", R.payments, [["方式", r => esc(r.name)], ["訂單", r => r.orders, "r num"], ["金額", r => money(r.amount), "r num"]])}
+        ${small("取貨方式", R.shippings, [["方式", r => esc(r.name)], ["訂單", r => r.orders, "r num"], ["運費", r => money(r.amount), "r num"]])}
+      </div>
+      <div class="grid-2">
+        ${small("折扣來源", R.discounts, [["來源", r => esc(r.label)], ["訂單", r => r.orders, "r num"], ["折扣", r => money(r.amount), "r num"]])}
+        <section class="panel"><div class="panel-head"><h2>進貨花費</h2><a class="small" href="#admin/purchases">進貨單</a></div>
+          <div class="panel-body"><div class="rp-big">${money(R.purchases.amount)}<span class="small muted">　入庫 ${R.purchases.units} 件</span></div>
+          ${R.purchases.bySupplier.length ? `<table class="tbl"><tbody>${R.purchases.bySupplier.map(x => `<tr><td>${esc(x.name || "（未指定供應商）")}</td><td class="r num">${x.units} 件</td><td class="r num">${money(x.amount)}</td></tr>`).join("")}</tbody></table>` : `<div class="small muted">這段期間沒有入庫</div>`}</div>
+        </section>
+      </div>
+      <details class="panel rp-detail"><summary class="panel-head"><h2>${unitLabel}明細表</h2></summary>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>${R.unit === "day" ? "日期" : "月份"}</th><th class="r">訂單</th><th class="r">營收</th><th class="r">毛利</th></tr></thead>
+        <tbody>${R.series.slice().reverse().map(x => `<tr><td class="num">${R.unit === "day" ? slash(x.date) : slash(x.date).slice(0, 7)}</td><td class="r num">${x.orders}</td><td class="r num">${money(x.revenue)}</td><td class="r num">${money(x.gross)}</td></tr>`).join("")}</tbody></table></div>
+      </details>`;
+    bindChartHover(body.querySelector(".rp-chart-wrap"), R.series, R.unit);
+    const ex = document.getElementById("rp-export");
+    ex.disabled = false;
+    ex.addEventListener("click", () => exportReport(R));
+  }
+
+  // 營收長條圖：單一數列（標題說明是什麼），滑過去顯示營收、訂單、毛利
+  function reportChart(series, unit) {
+    const W = 640, H = 200, padL = 48, padB = 24, padT = 12;
+    const max = Math.max(1000, ...series.map(d => d.revenue));
+    const step = niceStep(max / 4), top = Math.ceil(max / step) * step;
+    const bw = (W - padL) / Math.max(series.length, 1);
+    const y = v => H - padB - (v / top) * (H - padB - padT);
+    let g = "";
+    for (let v = 0; v <= top; v += step) g += `<line class="grid" x1="${padL}" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 6}" y="${y(v) + 3}" text-anchor="end">${v >= 1000 ? v / 1000 + "k" : v}</text>`;
+    const every = Math.ceil(series.length / 8);
+    series.forEach((d, i) => {
+      const x = padL + i * bw + bw * 0.15, w = Math.max(bw * 0.7, 1);
+      const h = d.revenue ? Math.max(2, H - padB - y(d.revenue)) : 0;
+      if (h) g += `<path class="bar" d="M${x},${H - padB} v${-(h - Math.min(4, h, w / 2))} q0,${-Math.min(4, h, w / 2)} ${Math.min(4, h, w / 2)},${-Math.min(4, h, w / 2)} h${w - 2 * Math.min(4, h, w / 2)} q${Math.min(4, h, w / 2)},0 ${Math.min(4, h, w / 2)},${Math.min(4, h, w / 2)} v${h - Math.min(4, h, w / 2)} z"/>`;
+      g += `<rect class="hit" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${H - padB - padT}" data-i="${i}"/>`;
+      if (i % every === 0) { const [yy, mm, dd] = d.date.split("-"); g += `<text x="${x + w / 2}" y="${H - 7}" text-anchor="middle">${unit === "day" ? `${+mm}/${+dd}` : `${yy.slice(2)}/${+mm}`}</text>`; }
+    });
+    return `<svg class="chart rp-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${unit === "day" ? "每日" : "每月"}營收長條圖，明細請看下方明細表">${g}</svg><div class="rp-tip" hidden></div>`;
+  }
+  function bindChartHover(wrap, series, unit) {
+    if (!wrap) return;
+    const tip = wrap.querySelector(".rp-tip"), svg = wrap.querySelector("svg");
+    const show = el => {
+      const d = series[+el.dataset.i]; if (!d) return;
+      svg.querySelectorAll(".hit.is-on").forEach(x => x.classList.remove("is-on")); el.classList.add("is-on");
+      tip.innerHTML = `<b>${unit === "day" ? slash(d.date) : slash(d.date).slice(0, 7)}</b><span>營收 ${money(d.revenue)}</span><span>毛利 ${money(d.gross)}</span><span>${d.orders} 筆訂單</span>`;
+      tip.hidden = false;
+      const r = el.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+      tip.style.left = Math.min(Math.max(r.left - w.left + r.width / 2, 70), w.width - 70) + "px";
+    };
+    svg.addEventListener("mousemove", e => { const el = e.target.closest(".hit"); if (el) show(el); });
+    svg.addEventListener("click", e => { const el = e.target.closest(".hit"); if (el) show(el); });
+    svg.addEventListener("mouseleave", () => { tip.hidden = true; svg.querySelectorAll(".hit.is-on").forEach(x => x.classList.remove("is-on")); });
+  }
+  function exportReport(R) {
+    const S = R.summary, n = { type: "number" };
+    const sheets = [
+      { name: "摘要", columns: [{ header: "項目", width: 16 }, Object.assign({ header: "數值", width: 14 }, n)], rows: [
+        ["期間", `${R.from} ～ ${R.to}`], ["營收（已付款）", S.revenue], ["訂單數", S.orders], ["件數", S.units], ["商品金額", S.goods], ["折扣", S.discount],
+        ["商品成本", S.cost], ["毛利", S.gross], ["運費收入", S.shipping], ["購買顧客", S.customers], ["新客", S.newCustomers],
+        ["待付款筆數", R.pending.orders], ["待付款金額", R.pending.amount], ["取消筆數", R.cancelled.orders], ["取消金額", R.cancelled.amount],
+        ["進貨件數", R.purchases.units], ["進貨花費", R.purchases.amount]] },
+      { name: R.unit === "day" ? "每日" : "每月", columns: [{ header: R.unit === "day" ? "日期" : "月份", width: 12 }, Object.assign({ header: "訂單" }, n), Object.assign({ header: "營收" }, n), Object.assign({ header: "毛利" }, n)],
+        rows: R.series.map(x => [R.unit === "day" ? x.date : x.date.slice(0, 7), x.orders, x.revenue, x.gross]) },
+      { name: "商品", columns: [{ header: "商品", width: 24 }, Object.assign({ header: "件數" }, n), Object.assign({ header: "訂單數" }, n), Object.assign({ header: "銷售額" }, n), Object.assign({ header: "成本" }, n), Object.assign({ header: "毛利" }, n)],
+        rows: R.products.map(x => [x.name, x.qty, x.orders, x.sales, x.cost, x.sales - x.cost]) },
+      { name: "規格", columns: [{ header: "商品", width: 24 }, { header: "規格", width: 14 }, { header: "SKU", width: 14 }, Object.assign({ header: "件數" }, n), Object.assign({ header: "銷售額" }, n)],
+        rows: R.variants.map(x => [x.name, x.optionText || "單一規格", x.sku || "", x.qty, x.sales]) },
+      { name: "付款與折扣", columns: [{ header: "類別", width: 10 }, { header: "名稱", width: 22 }, Object.assign({ header: "訂單" }, n), Object.assign({ header: "金額" }, n)],
+        rows: [...R.payments.map(x => ["付款方式", x.name, x.orders, x.amount]), ...R.shippings.map(x => ["取貨方式（運費）", x.name, x.orders, x.amount]), ...R.discounts.map(x => ["折扣", x.label, x.orders, x.amount])] },
+      { name: "進貨", columns: [{ header: "供應商", width: 22 }, Object.assign({ header: "件數" }, n), Object.assign({ header: "金額" }, n)],
+        rows: R.purchases.bySupplier.map(x => [x.name || "（未指定）", x.units, x.amount]) },
+    ];
+    download(XLSX.build(sheets), `報表_${R.from}_${R.to}.xlsx`);
+    toast("已匯出報表");
+  }
+
+  /* ---------- 商店網址、方案（資料庫版） ---------- */
+  function storeUrlBox() {
+    const url = DB.admin.storeUrl(DB.admin.store().slug);
+    return `<div class="url-box"><span class="small muted">你的商店網址</span>
+      <a class="mono" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>
+      <button class="btn btn-sm" type="button" data-copy="${esc(url)}">複製</button></div>`;
+  }
+  function planPanel() {
+    const b = DB.admin.billing(), pf = DB.admin.platformInfo(), B = window.Billing;
+    if (!b) return "";
+    return `<section class="panel">
+      <div class="panel-head"><h2>方案與年費</h2>${B.pill(b)}</div>
+      <div class="panel-body">
+        <div>${esc(B.line(b))}</div>
+        ${b.plan !== "free" ? `<div class="small muted">年費 ${money(pf.annualFee || 0)}／年，平台不抽成。${b.status === "trial" ? "試用期間功能全開；" : ""}要繳費或續約請聯絡平台${pf.contactEmail ? `：<a href="mailto:${esc(pf.contactEmail)}">${esc(pf.contactEmail)}</a>` : ""}${pf.contactLine ? `（LINE：${esc(pf.contactLine)}）` : ""}。</div>` : ""}
+        ${storeUrlBox()}
+      </div>
+    </section>`;
+  }
+  document.addEventListener("click", async e => {
+    const b = e.target.closest("[data-copy]");
+    if (!b) return;
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("已複製"); } catch (err) { toast("請手動選取網址複製", "error"); }
+  });
+
+  /* ---------- 我的商店、開新店 ---------- */
+  function viewStores() {
+    const list = DB.admin.stores(), cur = DB.admin.store(), B = window.Billing;
+    shell("", `
+      <div class="page-head"><h1>我的商店</h1></div>
+      <section class="panel">
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th>商店</th><th>網址代號</th><th>方案</th><th>到期</th><th></th></tr></thead>
+          <tbody>${list.map(x => `<tr>
+            <td><b>${esc(x.name)}</b>${x.id === cur.id ? ` <span class="pill info">目前</span>` : ""}</td>
+            <td class="mono">${esc(x.slug)}</td>
+            <td>${B.pill(x.billing)}</td>
+            <td class="small">${esc(B.short(x.billing))}</td>
+            <td class="r">${x.id === cur.id ? "" : `<button class="btn btn-sm" data-use="${esc(x.slug)}">切換到這家</button>`}
+              <a class="btn btn-sm btn-ghost" href="${esc(DB.admin.storeUrl(x.slug))}#shop" target="_blank" rel="noopener">看前台 ↗</a></td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>開一家新商店</h2></div>
+        <div class="panel-body" id="new-store"></div>
+      </section>`);
+    document.querySelectorAll("[data-use]").forEach(b => b.addEventListener("click", () => {
+      DB.admin.useStore(b.dataset.use); toast("已切換商店"); Router.go("admin");
+    }));
+    window.Billing.storeForm(document.getElementById("new-store"), DB.home.info(), () => Router.go("admin"));
   }
 
   /* ---------- 總覽 ---------- */
@@ -69,6 +395,7 @@
     const recent = DB.orders.list().slice(0, 6);
     shell("dash", `
       <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
+      ${DB.mode === "remote" ? storeUrlBox() : ""}
       <div class="kpis">
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>
         <div class="kpi"><span>本月營收</span><strong>${money(s.monthRevenue)}</strong><small>平均客單 ${money(s.avgOrder)}</small></div>
@@ -432,7 +759,18 @@
   }
 
   /* ---------- 訂單列表 ---------- */
-  let oq = "";
+  let oq = "", oPage = 0, oStatus = null;
+  const O_PAGE = 50;
+  // 分頁按鈕：上一頁／第幾頁／下一頁
+  function pager(total, page, size) {
+    const pages = Math.ceil(total / size);
+    if (pages <= 1) return total ? `<div class="pager"><span class="small muted">共 ${total} 筆</span></div>` : "";
+    return `<div class="pager">
+      <button class="btn btn-sm" type="button" data-page="${page - 1}" ${page <= 0 ? "disabled" : ""}>上一頁</button>
+      <span class="small muted">第 ${page + 1} / ${pages} 頁 · 共 ${total} 筆</span>
+      <button class="btn btn-sm" type="button" data-page="${page + 1}" ${page >= pages - 1 ? "disabled" : ""}>下一頁</button>
+    </div>`;
+  }
   function viewOrders(status) {
     status = status || "";
     const c = DB.orders.countByStatus();
@@ -444,11 +782,28 @@
           ${tab("", "全部")}${tab("pending_payment", "待付款")}${tab("paid", "待出貨")}${tab("shipped", "已出貨")}${tab("completed", "已完成")}${tab("cancelled", "已取消")}
         </nav>
         <div class="panel-head"><div class="toolbar"><input type="search" id="oq" placeholder="搜尋編號、姓名、手機" value="${esc(oq)}" aria-label="搜尋訂單"></div></div>
-        <div id="o-list"></div>
+        <div id="o-list"><div class="empty">載入中…</div></div>
+        <div id="o-pager"></div>
       </section>`);
-    const draw = () => { document.getElementById("o-list").innerHTML = ordersTable(DB.orders.list({ status, q: oq })); };
+    if (status !== oStatus) { oStatus = status; oPage = 0; }
+    // 一頁 50 筆，由資料庫查（全部訂單，不只近期）
+    let seq = 0;
+    const draw = async () => {
+      const my = ++seq;
+      try {
+        const r = await DB.orders.query({ status, q: oq }, { offset: oPage * O_PAGE, limit: O_PAGE });
+        if (my !== seq || !document.getElementById("o-list")) return;
+        document.getElementById("o-list").innerHTML = ordersTable(r.rows);
+        document.getElementById("o-pager").innerHTML = pager(r.total, oPage, O_PAGE);
+      } catch (err) { if (my === seq) document.getElementById("o-list").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+    };
     draw();
-    document.getElementById("oq").addEventListener("input", e => { oq = e.target.value; draw(); });
+    let timer = null;
+    document.getElementById("oq").addEventListener("input", e => { oq = e.target.value; oPage = 0; clearTimeout(timer); timer = setTimeout(draw, 300); });
+    document.getElementById("o-pager").addEventListener("click", e => {
+      const b = e.target.closest("[data-page]"); if (!b) return;
+      oPage = +b.dataset.page; draw(); document.getElementById("main").scrollIntoView();
+    });
     document.getElementById("o-export").addEventListener("click", () => exportPrompt(status));
   }
 
@@ -484,11 +839,17 @@
       const to = r === "custom" ? f.querySelector("#ex-to").value : "";
       return { status, q: oq, from, to };
     };
-    const refresh = () => {
+    let rseq = 0;
+    const refresh = async () => {
       f.querySelector("#ex-custom").hidden = f.querySelector('input[name="ex-range"]:checked').value !== "custom";
-      const n = DB.orders.list(filter()).length;
-      f.querySelector("#ex-count").textContent = `共 ${n} 筆訂單`;
-      f.querySelector("#ex-go").disabled = n === 0;
+      const my = ++rseq;
+      f.querySelector("#ex-count").textContent = "計算中…";
+      try {
+        const n = (await DB.orders.query(filter(), { offset: 0, limit: 1 })).total;
+        if (my !== rseq) return;
+        f.querySelector("#ex-count").textContent = `共 ${n} 筆訂單`;
+        f.querySelector("#ex-go").disabled = n === 0;
+      } catch (err) { f.querySelector("#ex-count").textContent = err.message; }
     };
     refresh();
     f.addEventListener("change", refresh);
@@ -496,14 +857,17 @@
     wrap.querySelector("#ex-cancel").addEventListener("click", close);
     wrap.addEventListener("click", e => { if (e.target === wrap) close(); });
     wrap.querySelector('input[name="ex-range"]:checked').focus();
-    f.addEventListener("submit", e => {
+    f.addEventListener("submit", async e => {
       e.preventDefault();
       const fl = filter();
-      const list = DB.orders.list(fl);
-      if (!list.length) return;
-      exportOrders(list, fl);
-      close();
-      toast(`已匯出 ${list.length} 筆訂單`);
+      const go = f.querySelector("#ex-go"); go.disabled = true; go.textContent = "準備中…";
+      try {
+        const list = (await DB.orders.query(fl, { offset: 0, limit: 20000 })).rows;
+        if (!list.length) return;
+        exportOrders(list, fl);
+        close();
+        toast(`已匯出 ${list.length} 筆訂單`);
+      } catch (err) { toast(err.message, "error"); go.disabled = false; go.textContent = "下載 .xlsx"; }
     });
   }
 
@@ -551,8 +915,8 @@
   }
 
   /* ---------- 訂單詳情 ---------- */
-  function viewOrder(id) {
-    const o = DB.orders.get(id);
+  async function viewOrder(id) {
+    const o = DB.orders.get(id) || await DB.orders.fetch(id);
     if (!o) return notFound("找不到這筆訂單", "admin/orders");
     const next = {
       pending_payment: [["paid", "確認已收款", "btn-primary"], ["cancelled", "取消訂單", ""]],
@@ -659,7 +1023,7 @@
   }
 
   /* ---------- 會員 ---------- */
-  let cq = "", ctier = "";
+  let cq = "", ctier = "", cShow = 100;
   // 等級標籤：第幾級決定顏色深淺
   const tierPill = lv => lv ? `<span class="tier-pill t${Math.min(lv.index, 4)}">${esc(lv.tier.name)}</span>` : "";
   function viewCustomers() {
@@ -678,15 +1042,19 @@
     const draw = () => {
       const list = DB.customers.list(cq).map(c => Object.assign(c, { level: DB.tiers.of(c.id) }))
         .filter(c => !ctier || (c.level && c.level.tier.id === ctier));
+      const shown = list.slice(0, cShow);
       document.getElementById("c-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
         <thead><tr><th>姓名</th>${on ? "<th>等級</th>" : ""}<th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
-        <tbody>${list.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
+        <tbody>${shown.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
           <td>${esc(c.name)}</td>${on ? `<td>${tierPill(c.level)}</td>` : ""}<td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
           <td class="r num">${c.orderCount}</td><td class="r num">${money(c.totalSpent)}</td><td class="num">${date(c.lastOrderAt)}</td>
-        </tr>`).join("")}</tbody></table></div>` : `<div class="empty">沒有符合的會員</div>`;
+        </tr>`).join("")}</tbody></table></div>
+        <div class="pager"><span class="small muted">顯示 ${shown.length} / ${list.length} 位</span>${list.length > shown.length ? `<button class="btn btn-sm" type="button" id="c-more">再顯示 100 位</button>` : ""}</div>` : `<div class="empty">沒有符合的會員</div>`;
+      const more = document.getElementById("c-more");
+      if (more) more.addEventListener("click", () => { cShow += 100; draw(); });
     };
     draw();
-    document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; draw(); });
+    document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; cShow = 100; draw(); });
     const sel = document.getElementById("ctier");
     if (sel) sel.addEventListener("change", e => { ctier = e.target.value; draw(); });
   }
@@ -779,7 +1147,7 @@
         <div class="kpi"><span>加入日期</span><strong style="font-size:17px">${date(c.createdAt)}</strong></div>
       </div>
       <div class="grid-2">
-        <section class="panel"><div class="panel-head"><h2>訂單紀錄</h2></div>${ordersTable(DB.orders.byCustomer(c.id))}</section>
+        <section class="panel"><div class="panel-head"><h2>訂單紀錄</h2></div><div id="cu-orders">${ordersTable(DB.orders.byCustomer(c.id))}</div></section>
         <div style="display:grid;gap:16px">
         <section class="panel"><div class="panel-head"><h2>聯絡資料</h2></div>
           <div class="panel-body"><dl class="kv">
@@ -800,6 +1168,10 @@
           </div></section>` : ""}
         </div>
       </div>`);
+    // 近期清單以外的舊訂單：到資料庫拿這位會員的全部訂單
+    if (c.orderCount > DB.orders.byCustomer(c.id).filter(o => o.status !== "cancelled").length) {
+      DB.orders.ofCustomer(c.id).then(list => { const el = document.getElementById("cu-orders"); if (el) el.innerHTML = ordersTable(list); }).catch(() => {});
+    }
   }
 
   /* ---------- 設定 ---------- */
@@ -807,6 +1179,7 @@
     const st = DB.settings.get();
     shell("settings", `
       <div class="page-head"><h1>設定</h1><button class="btn btn-primary" id="st-save">儲存設定</button></div>
+      ${DB.mode === "remote" ? planPanel() : ""}
       <section class="panel">
         <div class="panel-head"><h2>商店資料</h2></div>
         <div class="panel-body grid-form">
@@ -821,6 +1194,7 @@
         <div class="panel-body grid-form">
           <div class="field"><label for="st-free">免運門檻（NT$）</label><input type="number" id="st-free" min="0" step="1" value="${st.freeShippingThreshold}"><span class="hint">填 0 代表不設免運</span></div>
           <div class="field"><label for="st-low">低庫存提醒（件）</label><input type="number" id="st-low" min="0" step="1" value="${st.lowStockAlert}"><span class="hint">規格庫存小於等於這個數字時，總覽會提醒</span></div>
+          ${DB.mode === "remote" ? "" : "<!-- 離線示範版沒有自動取消 -->"}<div class="field" ${DB.mode === "remote" ? "" : "hidden"}><label for="st-autocancel">銀行轉帳幾天沒付款自動取消</label><input type="number" id="st-autocancel" min="0" max="30" step="1" value="${+st.autoCancelDays || 0}"><span class="hint">填 0 代表不自動取消。取消後庫存會加回，避免假訂單卡住庫存</span></div>
         </div>
       </section>
       <section class="panel">
@@ -853,7 +1227,7 @@
       <section class="panel" ${DB.features.reset ? "" : "hidden"}>
         <div class="panel-head"><h2>開發工具</h2></div>
         <div class="panel-body">
-          <p class="muted" style="margin:0">目前資料只存在這個瀏覽器裡（儲存空間約已使用 ${Math.round(DB.media.usage().ratio * 100)}%）。重置會把商品、訂單、會員、商品圖片都換回範例資料。</p>
+          <p class="muted" style="margin:0">目前資料只存在這個瀏覽器裡（儲存空間約已使用 ${Math.round(((DB.media.usage() || {}).ratio || 0) * 100)}%）。重置會把商品、訂單、會員、商品圖片都換回範例資料。</p>
           <div class="actions"><button class="btn" id="st-reset">重置範例資料</button></div>
         </div>
       </section>`);
@@ -866,6 +1240,7 @@
       cur.phone = document.getElementById("st-phone").value.trim();
       cur.freeShippingThreshold = Math.max(0, Math.floor(+document.getElementById("st-free").value || 0));
       cur.lowStockAlert = Math.max(0, Math.floor(+document.getElementById("st-low").value || 0));
+      cur.autoCancelDays = Math.min(30, Math.max(0, Math.floor(+document.getElementById("st-autocancel").value || 0)));
       root().querySelectorAll(".sm-on").forEach(el => { cur.shippingMethods[+el.dataset.i].enabled = el.checked; });
       root().querySelectorAll(".sm-fee").forEach(el => { cur.shippingMethods[+el.dataset.i].fee = Math.max(0, Math.floor(+el.value || 0)); });
       root().querySelectorAll(".pm-on").forEach(el => { cur.paymentMethods[+el.dataset.i].enabled = el.checked; });
@@ -1515,42 +1890,61 @@
   });
 
   /* ---------- 後台登入（資料庫版） ---------- */
-  window.AdminGate = function (st) {
-    const wrap = inner => { root().innerHTML = `<div class="gate"><div class="gate-card">${inner}</div></div>`; };
+  window.AdminGate = function (st, parts) {
+    const wrap = (inner, wide) => { root().innerHTML = `<div class="gate"><div class="gate-card${wide ? " is-wide" : ""}">${inner}</div></div>`; };
+    const outBtn = () => document.getElementById("gate-out").addEventListener("click", async () => { await DB.admin.logout(); Router.go("admin"); });
     if (st.state === "nostore") {
-      const sql = `select setup_add_owner('${st.slug}', '${String(st.email).replace(/'/g, "''")}');`;
       wrap(`
-        <h1>還差一步：設定店主</h1>
-        <p>你已經用 <b>${esc(st.email)}</b> 登入，但這個帳號還不是這家商店的管理者。</p>
+        <h1>開一家你的商店</h1>
+        <p class="muted">已用 <b>${esc(st.email)}</b> 登入。填好商店名稱和網址代號，馬上就能開始試用。</p>
+        <div id="gate-new"></div>
+        <div class="actions"><button class="btn btn-ghost" id="gate-out" type="button">登出，換一個帳號</button></div>`, true);
+      window.Billing.storeForm(document.getElementById("gate-new"), st.home || DB.home.info(), () => Router.go("admin"));
+      outBtn(); return;
+    }
+    if (st.state === "pick") {
+      const B = window.Billing;
+      wrap(`
+        <h1>選擇商店</h1>
+        ${st.wanted ? `<div class="notice">這個帳號沒有「${esc(st.wanted)}」的管理權限，請從下面選一家你的商店。</div>` : `<p class="muted">${esc(st.email)} 管理 ${st.stores.length} 家商店</p>`}
+        <div class="pick-list">${st.stores.map(x => `<button class="pick-item" type="button" data-use="${esc(x.slug)}">
+          <b>${esc(x.name)}</b><span class="mono small muted">${esc(x.slug)}</span>${B.pill(x.billing)}</button>`).join("")}</div>
+        <div class="actions"><button class="btn btn-ghost" id="gate-out" type="button">登出</button></div>`);
+      document.querySelectorAll(".pick-item").forEach(b => b.addEventListener("click", () => { DB.admin.useStore(b.dataset.use); Router.go("admin"); }));
+      outBtn(); return;
+    }
+    if (st.state === "denied") {
+      const sql = `select setup_platform_admin('${String(st.email).replace(/'/g, "''")}');`;
+      wrap(`
+        <h1>平台總控台</h1>
+        <p>你用 <b>${esc(st.email)}</b> 登入，但這個帳號還不是平台管理者。</p>
         <ol class="gate-steps">
           <li>打開 Supabase 後台，左邊選 <b>SQL Editor</b>，按 <b>New query</b></li>
-          <li>貼上下面這一行，按 <b>Run</b>：<pre class="gate-sql mono" id="gate-sql">${esc(sql)}</pre><button class="btn btn-sm" id="gate-copy" type="button">複製</button></li>
+          <li>貼上下面這一行，按 <b>Run</b>：<pre class="gate-sql mono" id="gate-sql">${esc(sql)}</pre><button class="btn btn-sm" type="button" data-copy="${esc(sql)}">複製</button></li>
           <li>看到「完成」後，回到這裡按「重新檢查」</li>
         </ol>
-        <div class="actions"><button class="btn btn-primary" id="gate-retry">重新檢查</button><button class="btn btn-ghost" id="gate-out">登出，換一個帳號</button></div>`);
-      document.getElementById("gate-copy").addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(sql); toast("已複製"); }
-        catch (e) { const r = document.createRange(); r.selectNodeContents(document.getElementById("gate-sql")); getSelection().removeAllRanges(); getSelection().addRange(r); toast("請按 ⌘C／Ctrl+C 複製"); }
-      });
-      document.getElementById("gate-retry").addEventListener("click", () => Router.render());
-      document.getElementById("gate-out").addEventListener("click", async () => { await DB.admin.logout(); Router.render(); });
-      return;
+        <div class="actions"><button class="btn btn-primary" id="gate-retry" type="button">重新檢查</button><a class="btn" href="#admin">回商家後台</a><button class="btn btn-ghost" id="gate-out" type="button">登出</button></div>`);
+      document.getElementById("gate-retry").addEventListener("click", () => { DB.admin.recheck(); Router.render(); });
+      outBtn(); return;
     }
     // 登入／建立帳號
-    let mode = "login";
+    const forPlatform = st.side === "platform";
+    let mode = parts && parts[1] === "signup" && !forPlatform ? "signup" : "login";
     const draw = msg => {
       wrap(`
-        <h1>商家後台</h1>
-        <p class="muted">${mode === "login" ? "用你的 Email 登入" : "第一次使用：建立管理者帳號"}</p>
+        <h1>${forPlatform ? "平台總控台" : mode === "login" ? "商家登入" : "免費開店"}</h1>
+        <p class="muted">${mode === "login" ? "用你的 Email 登入" : "第一步：建立你的帳號（之後可以開好幾家店）"}</p>
         ${msg ? `<div class="notice">${msg}</div>` : ""}
         <form id="gate-form" class="gate-form" novalidate>
           <div class="field"><label for="gate-email">Email</label><input type="email" id="gate-email" autocomplete="username" required></div>
           <div class="field"><label for="gate-pw">密碼</label><input type="password" id="gate-pw" autocomplete="${mode === "login" ? "current-password" : "new-password"}" required>${mode === "login" ? "" : `<span class="hint">至少 8 個字元</span>`}</div>
           <button class="btn btn-primary" type="submit" style="padding:10px">${mode === "login" ? "登入" : "建立帳號"}</button>
         </form>
-        <button class="btn btn-ghost" id="gate-switch" type="button">${mode === "login" ? "第一次使用？建立帳號" : "已經有帳號？登入"}</button>`);
+        ${forPlatform ? "" : `<button class="btn btn-ghost" id="gate-switch" type="button">${mode === "login" ? "還沒有帳號？免費開店" : "已經有帳號？登入"}</button>`}
+        <a class="small muted" href="#home" style="text-align:center">← 回平台首頁</a>`);
       document.getElementById("gate-email").focus();
-      document.getElementById("gate-switch").addEventListener("click", () => { mode = mode === "login" ? "signup" : "login"; draw(); });
+      const sw = document.getElementById("gate-switch");
+      if (sw) sw.addEventListener("click", () => { mode = mode === "login" ? "signup" : "login"; draw(); });
       document.getElementById("gate-form").addEventListener("submit", async e => {
         e.preventDefault();
         const email = document.getElementById("gate-email").value.trim(), pw = document.getElementById("gate-pw").value;
@@ -1562,7 +1956,7 @@
           if (mode === "login") { await DB.admin.login(email, pw); Router.render(); }
           else {
             const r = await DB.admin.signup(email, pw);
-            if (r.needConfirm) { mode = "login"; draw(`已寄出確認信到 <b>${esc(email)}</b>。請到信箱點信裡的連結，完成後回來這裡登入。`); }
+            if (r.needConfirm) { mode = "login"; draw(`已寄出確認信到 <b>${esc(email)}</b>。請到信箱點信裡的連結，會直接回到這裡繼續開店。`); }
             else Router.render();
           }
         } catch (err) { toast(err.message, "error"); btn.disabled = false; }
@@ -1601,6 +1995,9 @@
       case "purchase": return viewPurchase(arg);
       case "suppliers": return viewSuppliers();
       case "supplier": return viewSupplierEdit(arg);
+      case "reports": return viewReports();
+      case "theme": return viewTheme();
+      case "stores": return DB.mode === "remote" ? viewStores() : notFound("離線示範版只有一家商店", "admin");
       default: return notFound("找不到這個頁面", "admin");
     }
   };

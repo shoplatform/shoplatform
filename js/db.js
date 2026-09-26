@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.8）
+ * db.js — 資料層（Supabase 資料庫版，v0.12）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -10,18 +10,40 @@
  * ========================================================= */
 (function () {
   const cfg = window.SHOP_CONFIG || {};
-  const SLUG = cfg.storeSlug;
+  const DEFAULT_SLUG = cfg.storeSlug || "demo";
+  const cleanSlug = v => { v = String(v || "").trim().toLowerCase(); return /^[a-z0-9-]{2,40}$/.test(v) ? v : ""; };
+  // 商店網址：?store=<代號>。前台沒帶代號時用範例商店；後台登入後依帳號決定是哪一家
+  let SLUG = cleanSlug(new URLSearchParams(location.search).get("store"));
+  const shopSlug = () => SLUG || DEFAULT_SLUG;
   // 商家後台和前台顧客分成兩個登入狀態，互不影響（店主去逛前台不會被當成顧客，反之亦然）
+  // 前台的登入狀態每家店分開存
   const mkClient = key => window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, flowType: "pkce", storageKey: `shopPlatform.${key}.${SLUG}` },
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, flowType: "pkce", storageKey: `shopPlatform.${key}` },
   });
   const sbAdmin = mkClient("admin");
-  const sbShop = mkClient("shop");
+  let sbShopC = null, sbShopSlug = null;
+  function shopClient() {
+    if (sbShopSlug !== shopSlug()) {
+      sbShopC = mkClient("shop." + shopSlug()); sbShopSlug = shopSlug();
+      cache.shop = null; cache.member = null; cache.myOrders = []; memberLoaded = false; shopUser = null;
+      cartState = readCart();
+    }
+    return sbShopC;
+  }
   const IMAGE_BUCKET = "product-images";
   const baseUrl = () => location.origin + location.pathname;
+  // 產生網址：linkUrl({ next: "shop" }, "abc") → …/?store=abc&next=shop
+  const linkUrl = (extra, slug) => {
+    const q = new URLSearchParams();
+    if (slug) q.set("store", slug);
+    Object.entries(extra || {}).forEach(([k, v]) => q.set(k, v));
+    const t = q.toString();
+    return baseUrl() + (t ? "?" + t : "");
+  };
+  const storeUrl = slug => linkUrl({}, slug);
 
   // memberAuth：前台會員用 Email 帳號（離線示範版用手機）
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email" };
+  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email", platform: true };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const listeners = [];
@@ -53,7 +75,8 @@
     if (r.error) throw new Error(friendly(r.error));
     return r.data;
   }
-  const rpc = (fn, args) => call(fn.startsWith("admin_") ? sbAdmin : sbShop, fn, args);
+  // 後台與平台函式用商家的登入狀態，前台函式用顧客的
+  const rpc = (fn, args) => call(fn.startsWith("admin_") || (fn.startsWith("platform_") && fn !== "platform_public") ? sbAdmin : shopClient(), fn, args);
 
   /* ---------- 從 Email 連結回來（確認信、重設密碼）----------
    * 連結會帶 ?code=...&next=admin|shop|reset，用發出請求的那個登入狀態換成登入 */
@@ -69,7 +92,7 @@
     let hash = next === "admin" ? "#admin" : next === "reset" ? "#shop/reset" : "#shop/account";
     try {
       if (qs.get("error_description") || qs.get("error")) throw new Error(qs.get("error_description") || qs.get("error"));
-      const client = next === "admin" ? sbAdmin : sbShop;
+      const client = next === "admin" ? sbAdmin : shopClient();
       const r = await client.auth.exchangeCodeForSession(qs.get("code"));
       if (r.error) throw r.error;
       notice = { kind: "ok", text: next === "reset" ? "請設定新密碼" : "Email 已確認，歡迎！" };
@@ -81,14 +104,14 @@
       if (next === "reset") hash = "#shop/forgot";
       else if (next === "shop") hash = "#shop/login";
     }
-    history.replaceState(null, "", baseUrl() + hash);
+    history.replaceState(null, "", linkUrl({}, SLUG) + hash);
     if (window.UI && window.UI.Router) window.UI.Router.current = hash.slice(1);
   }
 
   /* ---------- 快取：前台（公開目錄）與後台（整家店）分開 ---------- */
-  const cache = { shop: null, admin: null, member: null, myOrders: [] };
+  const cache = { shop: null, admin: null, member: null, myOrders: [], platform: null, home: null };
   let side = "shop";
-  const C = () => cache[side] || cache.shop || empty();
+  const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
       categories: [], products: [], customers: [], orders: [], coupons: [], promotions: [], store: {},
@@ -111,70 +134,135 @@
   }
 
   async function loadShop() {
-    const d = normalize(await rpc("shop_catalog", { p_slug: SLUG }));
+    const d = normalize(await rpc("shop_catalog", { p_slug: shopSlug() }));
     cache.shop = Object.assign(empty(), d, { loadedAt: Date.now() });
   }
   // 前台會員：有登入就載入會員資料和訂單
   async function loadMember() {
-    const { data } = await sbShop.auth.getSession();
+    const { data } = await shopClient().auth.getSession();
     shopUser = data && data.session ? data.session.user : null;
     if (!shopUser) { cache.member = null; cache.myOrders = []; return; }
-    cache.member = await rpc("shop_member_me", { p_slug: SLUG });
-    cache.myOrders = cache.member ? await rpc("shop_my_orders", { p_slug: SLUG }) : [];
+    cache.member = await rpc("shop_member_me", { p_slug: shopSlug() });
+    cache.myOrders = cache.member ? await rpc("shop_my_orders", { p_slug: shopSlug() }) : [];
   }
   async function loadAdmin() {
     const d = normalize(await rpc("admin_bootstrap", { p_store: adminStore.id }));
     cache.admin = Object.assign(empty(), d, { loadedAt: Date.now() });
+    extraOrders = {};
     notify();
   }
 
-  /* ---------- 後台登入 ---------- */
+  /* ---------- 後台登入、選商店、開新店 ---------- */
   let adminStore = null, adminUser = null, shopUser = null;
+  let myStores = null, isPlatform = false;
+  const LAST_KEY = "shopPlatform.lastStore";
+  const remember = slug => { try { localStorage.setItem(LAST_KEY, slug); } catch (e) { /* 忽略 */ } };
+  const lastStore = () => { try { return localStorage.getItem(LAST_KEY) || ""; } catch (e) { return ""; } };
+  const resetAdmin = () => { adminStore = null; cache.admin = null; myStores = null; isPlatform = false; cache.platform = null; };
   const admin = {
     user: () => adminUser && { email: adminUser.email, id: adminUser.id },
     store: () => adminStore,
+    stores: () => clone(myStores || []),
+    isPlatform: () => isPlatform,
+    storeUrl,
+    billing: () => (cache.admin && cache.admin.billing) || null,
+    platformInfo: () => (cache.admin && cache.admin.platform) || {},
     async login(email, password) {
       const r = await sbAdmin.auth.signInWithPassword({ email: String(email || "").trim(), password });
       if (r.error) throw new Error(friendly(r.error));
-      adminUser = r.data.user; adminStore = null; cache.admin = null;
+      adminUser = r.data.user; resetAdmin();
     },
     /* 回傳 { needConfirm: true } 代表要先去信箱點確認連結 */
     async signup(email, password) {
       const r = await sbAdmin.auth.signUp({ email: String(email || "").trim(), password,
-        options: { emailRedirectTo: baseUrl() + "?next=admin" } });
+        options: { emailRedirectTo: linkUrl({ next: "admin" }, SLUG) } });
       if (r.error) throw new Error(friendly(r.error));
       if (r.data.session) { adminUser = r.data.user; return { needConfirm: false }; }
       return { needConfirm: true };
     },
     async logout() {
       await sbAdmin.auth.signOut({ scope: "local" }).catch(() => {});
-      adminUser = null; adminStore = null; cache.admin = null;
+      adminUser = null; resetAdmin();
     },
     refresh: () => loadAdmin(),
+    recheck: () => resetAdmin(),   // 重新確認權限（例如剛在 SQL Editor 設定完平台管理者）
+    // 切換到另一家自己的商店（網址改成 ?store=<代號>）
+    useStore(slug) {
+      const st = (myStores || []).find(x => x.slug === slug);
+      if (!st) throw new Error("找不到這家商店");
+      adminStore = st; cache.admin = null; SLUG = slug; remember(slug);
+      history.replaceState(null, "", storeUrl(slug) + location.hash);
+    },
+    async checkSlug(slug) { return rpc("admin_slug_available", { p_slug: slug }); },
+    async createStore(name, slug) {
+      const r = await rpc("admin_create_store", { p_name: name, p_slug: slug });
+      myStores = await rpc("admin_my_stores");
+      admin.useStore(r.slug);
+      return r;
+    },
   };
 
-  /* 進入頁面前呼叫。回傳 {state}：ok／login（要登入）／nostore（登入了但不是店主） */
+  /* 平台首頁的公開資訊（年費、試用天數…） */
+  async function loadHome() {
+    if (!cache.home) { try { cache.home = await call(sbAdmin, "platform_public"); } catch (e) { cache.home = { platformName: "開店平台", annualFee: 0, trialDays: 0, signupOpen: false, error: e.message }; } }
+    return cache.home;
+  }
+  const home = { info: () => clone(cache.home || {}), load: loadHome };
+
+  /* 進入頁面前呼叫。回傳 {state}：
+   *   後台：ok／login（要登入）／nostore（還沒有商店，可以開店）／pick（有好幾家，選一家）
+   *   平台：ok／login／denied（不是平台管理者） */
   let memberLoaded = false;
   async function ready(which) {
     await boot();
-    side = which === "admin" ? "admin" : "shop";
+    side = which === "admin" ? "admin" : which === "platform" ? "platform" : which === "home" ? "home" : "shop";
+    if (side === "home") { await loadHome(); return { state: "ok" }; }
     if (side === "shop") {
-      if (!cache.shop || Date.now() - cache.shop.loadedAt > 60000) await loadShop();
+      shopClient();
+      if (!cache.shop || Date.now() - cache.shop.loadedAt > 60000) await Promise.all([loadShop(), loadHome()]);
       if (!memberLoaded) { await loadMember(); await autoJoin(); memberLoaded = true; }
       return { state: "ok" };
     }
     const { data } = await sbAdmin.auth.getSession();
     const sess = data && data.session;
-    if (!sess) { adminUser = null; return { state: "login" }; }
+    if (!sess) { adminUser = null; resetAdmin(); return { state: "login" }; }
+    if (!adminUser || adminUser.id !== sess.user.id) resetAdmin();
     adminUser = sess.user;
+    if (!myStores) { [myStores, isPlatform] = await Promise.all([rpc("admin_my_stores"), rpc("platform_me")]); }
+    if (side === "platform") {
+      if (!isPlatform) return { state: "denied", email: adminUser.email };
+      if (!cache.platform || Date.now() - cache.platform.loadedAt > 10000) await loadPlatform();
+      return { state: "ok" };
+    }
     if (!adminStore) {
-      const stores = await rpc("admin_my_stores");
-      adminStore = stores.find(s => s.slug === SLUG) || null;
-      if (!adminStore) return { state: "nostore", email: adminUser.email, slug: SLUG };
+      await loadHome();
+      if (!myStores.length) return { state: "nostore", email: adminUser.email, home: clone(cache.home) };
+      let pick = SLUG ? myStores.find(x => x.slug === SLUG) : null;
+      if (!pick && !SLUG) pick = myStores.length === 1 ? myStores[0] : myStores.find(x => x.slug === lastStore());
+      if (!pick) return { state: "pick", email: adminUser.email, stores: clone(myStores), wanted: SLUG };
+      admin.useStore(pick.slug);
     }
     if (!cache.admin || Date.now() - cache.admin.loadedAt > 10000) await loadAdmin();
     return { state: "ok" };
   }
+
+  /* ---------- 平台總控台 ---------- */
+  async function loadPlatform() {
+    const d = await rpc("platform_overview");
+    cache.platform = Object.assign(d, { loadedAt: Date.now() });
+  }
+  const afterPlatform = async () => { await loadPlatform(); };
+  const platform = {
+    data: () => clone(cache.platform || { stores: [], log: [], settings: {} }),
+    store: id => clone(((cache.platform || {}).stores || []).find(x => x.id === id) || null),
+    async recordPayment(store, years, amount, note) { const r = await rpc("platform_record_payment", { p_store: store, p_years: +years, p_amount: +amount, p_note: note || "" }); await afterPlatform(); return r; },
+    async setUntil(store, until, note) { await rpc("platform_set_until", { p_store: store, p_until: until, p_note: note || "" }); await afterPlatform(); },
+    async setPlan(store, plan, note) { await rpc("platform_set_plan", { p_store: store, p_plan: plan, p_note: note || "" }); await afterPlatform(); },
+    async setSuspended(store, on, reason) { await rpc("platform_set_suspended", { p_store: store, p_suspended: !!on, p_reason: reason || "" }); await afterPlatform(); },
+    async saveNote(store, note) { await rpc("platform_save_note", { p_store: store, p_note: note || "" }); await afterPlatform(); },
+    async saveSettings(v) { await rpc("platform_save_settings", { p_settings: v }); cache.home = null; await afterPlatform(); },
+    reload: () => loadPlatform(),
+  };
   // 寫入後重新載入後台快取
   const afterWrite = async () => { await loadAdmin(); };
 
@@ -183,7 +271,14 @@
   /* ---------- 商店設定 ---------- */
   const settings = {
     get: () => clone(C().settings),
-    async update(patch) { await rpc("admin_save_settings", { p_store: adminStore.id, p_settings: Object.assign(clone(cache.admin.settings), clone(patch)) }); await afterWrite(); },
+    async update(patch) {
+      const before = ((cache.admin.settings.theme || {}).logo || {}).path;
+      await rpc("admin_save_settings", { p_store: adminStore.id, p_settings: Object.assign(clone(cache.admin.settings), clone(patch)) });
+      await afterWrite();
+      // 換掉或移除的 Logo 檔案一起刪掉
+      const after = ((cache.admin.settings.theme || {}).logo || {}).path;
+      if (before && before !== after) await media.removeFiles([before]);
+    },
   };
 
   /* ---------- 分類 ---------- */
@@ -215,6 +310,21 @@
       if (r.error) throw new Error(friendly(r.error));
       const url = sbAdmin.storage.from(IMAGE_BUCKET).getPublicUrl(path).data.publicUrl;
       return { id, url, path, width: out.width, height: out.height, name: file.name };
+    },
+    // Logo：保留透明背景（PNG），長邊最多 480px，存到 <商店編號>/logo_xxx.png
+    async prepareLogo(file) {
+      if (!file || !media.ACCEPT.includes(file.type) || file.type === "image/gif") throw new Error("Logo 要是 JPG、PNG、WebP 圖片");
+      if (file.size > 5 * 1024 * 1024) throw new Error("Logo 檔案太大（上限 5MB）");
+      const bmp = await decode(file);
+      const w0 = bmp.width || bmp.naturalWidth, h0 = bmp.height || bmp.naturalHeight, k = Math.min(1, 480 / Math.max(w0, h0));
+      const cv = document.createElement("canvas"); cv.width = Math.max(1, Math.round(w0 * k)); cv.height = Math.max(1, Math.round(h0 * k));
+      cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+      if (bmp.close) bmp.close();
+      const blob = await new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error("圖片轉檔失敗")), "image/png"));
+      const path = `${adminStore.id}/${uid("logo")}.png`;
+      const r = await sbAdmin.storage.from(IMAGE_BUCKET).upload(path, blob, { contentType: "image/png", cacheControl: "31536000", upsert: false });
+      if (r.error) throw new Error(friendly(r.error));
+      return { url: sbAdmin.storage.from(IMAGE_BUCKET).getPublicUrl(path).data.publicUrl, path, width: cv.width, height: cv.height };
     },
     usage: () => null,   // 雲端儲存不用顯示瀏覽器容量
     async removeFiles(paths) {
@@ -319,9 +429,10 @@
         .sort((a, b) => (b.lastOrderAt || b.createdAt).localeCompare(a.lastOrderAt || a.createdAt));
     },
     get(id) { const c = C().customers.find(x => x.id === id); return c ? Object.assign(clone(c), customers.summary(id)) : null; },
+    // 累積消費、訂單數由伺服器算「全部訂單」（後台只載入近期訂單）
     summary(id) {
-      const os = C().orders.filter(o => o.customerId === id && o.status !== "cancelled");
-      return { orderCount: os.length, totalSpent: os.reduce((s, o) => s + o.total, 0), lastOrderAt: os.map(o => o.createdAt).sort().pop() || "" };
+      const x = (C().customerStats || {})[id];
+      return x ? { orderCount: x.n, totalSpent: x.spent, lastOrderAt: x.last || "" } : { orderCount: 0, totalSpent: 0, lastOrderAt: "" };
     },
   };
 
@@ -336,7 +447,7 @@
     if (!shopUser || cache.member) return;
     const meta = shopUser.user_metadata || {};
     if (!meta.name || !meta.phone) return;
-    try { cache.member = await rpc("shop_member_join", { p_slug: SLUG, p_name: meta.name, p_phone: meta.phone }); cache.myOrders = await rpc("shop_my_orders", { p_slug: SLUG }); }
+    try { cache.member = await rpc("shop_member_join", { p_slug: shopSlug(), p_name: meta.name, p_phone: meta.phone }); cache.myOrders = await rpc("shop_my_orders", { p_slug: shopSlug() }); }
     catch (e) { /* 資料不完整就讓使用者自己補 */ }
   }
   async function afterShopLogin() {
@@ -355,50 +466,50 @@
       if (!name) throw new Error("請填寫姓名");
       if (!/^09\d{8}$/.test(phone)) throw new Error("手機格式應為 09 開頭共 10 碼");
       if (String(password || "").length < 8) throw new Error("密碼至少 8 個字元");
-      const r = await sbShop.auth.signUp({ email, password, options: { data: { name, phone }, emailRedirectTo: baseUrl() + "?next=shop" } });
+      const r = await shopClient().auth.signUp({ email, password, options: { data: { name, phone }, emailRedirectTo: linkUrl({ next: "shop" }, shopSlug()) } });
       if (r.error) throw new Error(friendly(r.error));
       if (r.data.session) { await afterShopLogin(); return { needConfirm: false }; }
       return { needConfirm: true };
     },
     async login(email, password) {
-      const r = await sbShop.auth.signInWithPassword({ email: String(email || "").trim(), password });
+      const r = await shopClient().auth.signInWithPassword({ email: String(email || "").trim(), password });
       if (r.error) throw new Error(friendly(r.error));
       await afterShopLogin();
       return auth.current();
     },
     async join({ name, phone }) {
-      cache.member = await rpc("shop_member_join", { p_slug: SLUG, p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
-      cache.myOrders = await rpc("shop_my_orders", { p_slug: SLUG });
+      cache.member = await rpc("shop_member_join", { p_slug: shopSlug(), p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
+      cache.myOrders = await rpc("shop_my_orders", { p_slug: shopSlug() });
       notify();
       return auth.current();
     },
     async logout() {
-      await sbShop.auth.signOut({ scope: "local" }).catch(() => {});
+      await shopClient().auth.signOut({ scope: "local" }).catch(() => {});
       shopUser = null; cache.member = null; cache.myOrders = []; notify();
     },
     async updateProfile({ name, phone }) {
-      cache.member = await rpc("shop_member_update", { p_slug: SLUG, p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
+      cache.member = await rpc("shop_member_update", { p_slug: shopSlug(), p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
       notify();
     },
     async changePassword(oldPw, newPw) {
       if (!shopUser) throw new Error("請先登入");
       if (String(newPw || "").length < 8) throw new Error("新密碼至少 8 個字元");
-      const check = await sbShop.auth.signInWithPassword({ email: shopUser.email, password: oldPw });
+      const check = await shopClient().auth.signInWithPassword({ email: shopUser.email, password: oldPw });
       if (check.error) throw new Error("目前的密碼不正確");
-      const r = await sbShop.auth.updateUser({ password: newPw });
+      const r = await shopClient().auth.updateUser({ password: newPw });
       if (r.error) throw new Error(friendly(r.error));
     },
     async requestReset(email) {
       email = String(email || "").trim();
       if (!EMAIL_RE.test(email)) throw new Error("Email 格式不正確");
-      const r = await sbShop.auth.resetPasswordForEmail(email, { redirectTo: baseUrl() + "?next=reset" });
+      const r = await shopClient().auth.resetPasswordForEmail(email, { redirectTo: linkUrl({ next: "reset" }, shopSlug()) });
       if (r.error) throw new Error(friendly(r.error));
     },
     async setNewPassword(pw) {
       if (String(pw || "").length < 8) throw new Error("密碼至少 8 個字元");
-      const { data } = await sbShop.auth.getSession();
+      const { data } = await shopClient().auth.getSession();
       if (!data || !data.session) throw new Error("重設密碼連結已失效，請重新申請");
-      const r = await sbShop.auth.updateUser({ password: pw });
+      const r = await shopClient().auth.updateUser({ password: pw });
       if (r.error) throw new Error(friendly(r.error));
       await afterShopLogin();
     },
@@ -412,6 +523,8 @@
     get: () => clone((side === "admin" && cache.admin ? cache.admin.memberTiers : (cache.shop || empty()).memberTiers) || { enabled: false, period: "all", tiers: [] }),
     async save(cfg) { await rpc("admin_save_tiers", { p_store: adminStore.id, p_cfg: cfg }); await afterWrite(); },
     spentOf(customerId) {
+      const x = (C().customerStats || {})[customerId];
+      if (side === "admin" && x) return x.tierSpent;
       const cfgT = tiers.get();
       const since = cfgT.period === "12m" ? Date.now() - 365 * 86400000 : -Infinity;
       return C().orders.filter(o => o.customerId === customerId && COUNTED.includes(o.status) && new Date(o.createdAt).getTime() >= since)
@@ -517,13 +630,13 @@
   };
 
   /* ---------- 購物車（存在這個瀏覽器） ---------- */
-  const CART_KEY = "shopPlatform.cart." + SLUG;
+  const cartKey = () => "shopPlatform.cart." + shopSlug();
   function readCart() {
-    try { const x = JSON.parse(localStorage.getItem(CART_KEY) || "null"); return x && Array.isArray(x.lines) ? x : { lines: [], coupon: "" }; }
+    try { const x = JSON.parse(localStorage.getItem(cartKey()) || "null"); return x && Array.isArray(x.lines) ? x : { lines: [], coupon: "" }; }
     catch (e) { return { lines: [], coupon: "" }; }
   }
   let cartState = readCart();
-  const saveCart = () => { try { localStorage.setItem(CART_KEY, JSON.stringify(cartState)); } catch (e) { /* 無法儲存時只保留在記憶體 */ } notify(); };
+  const saveCart = () => { try { localStorage.setItem(cartKey(), JSON.stringify(cartState)); } catch (e) { /* 無法儲存時只保留在記憶體 */ } notify(); };
   const findVariant = variantId => {
     for (const p of (cache.shop || empty()).products) { const v = p.variants.find(x => x.id === variantId); if (v) return { p, v }; }
     return null;
@@ -570,7 +683,7 @@
   /* ---------- 金額試算（資料庫算） ---------- */
   async function quote(items, shippingMethodId, opts = {}) {
     const q = await rpc("shop_quote", {
-      p_slug: SLUG, p_items: items.map(it => ({ variantId: it.variantId, qty: it.qty })),
+      p_slug: shopSlug(), p_items: items.map(it => ({ variantId: it.variantId, qty: it.qty })),
       p_ship: shippingMethodId || null, p_coupon: opts.couponCode || null, p_phone: opts.phone || null,
     });
     return q;
@@ -578,6 +691,7 @@
 
   /* ---------- 訂單 ---------- */
   const guestPass = {}; // 這次開啟頁面時下過或查過的訂單（編號 → { view, phone }）
+  let extraOrders = {};   // 從搜尋、舊訂單頁拿到的訂單（不在近期清單裡）
   const orders = {
     STATUS,
     list({ status = "", q = "", from = "", to = "" } = {}) {
@@ -590,21 +704,38 @@
           (!q || o.number.toLowerCase().includes(q) || o.contact.name.toLowerCase().includes(q) || o.contact.phone.includes(q));
       }).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     },
-    get: id => { const o = C().orders.find(x => x.id === id || x.number === id); return o ? clone(o) : null; },
+    get: id => { const o = C().orders.find(x => x.id === id || x.number === id) || (side === "admin" && Object.values(extraOrders).find(x => x.id === id || x.number === id)); return o ? clone(o) : null; },
     countByStatus() {
-      const out = { all: C().orders.length };
-      Object.keys(STATUS).forEach(k => { out[k] = C().orders.filter(o => o.status === k).length; });
+      const sc = C().statusCounts || {};
+      const out = { all: C().orderTotal != null ? C().orderTotal : C().orders.length };
+      Object.keys(STATUS).forEach(k => { out[k] = sc[k] || 0; });
       return out;
     },
     byCustomer: id => clone(C().orders.filter(o => o.customerId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))),
+    /* 分頁查詢（全部訂單，伺服器端）：回傳 { total, rows } */
+    async query({ status = "", q = "", from = "", to = "" } = {}, { offset = 0, limit = 50 } = {}) {
+      const r = await rpc("admin_search_orders", { p_store: adminStore.id, p_status: status, p_q: q.trim(), p_from: from || null, p_to: to || null, p_offset: offset, p_limit: limit });
+      r.rows.forEach(o => { extraOrders[o.id] = o; });
+      return clone(r);
+    },
+    // 打開一筆不在近期清單裡的舊訂單
+    async fetch(id) {
+      const hit = orders.get(id);
+      if (hit) return hit;
+      const o = await rpc("admin_get_order", { p_store: adminStore.id, p_id: id });
+      if (o) extraOrders[o.id] = o;
+      return o ? clone(o) : null;
+    },
+    async ofCustomer(id) { return clone(await rpc("admin_customer_orders", { p_store: adminStore.id, p_customer: id })); },
+    window: () => ({ loaded: C().orders.length, total: C().orderTotal != null ? C().orderTotal : C().orders.length, days: 120 }),
 
     /* 前台下單：資料庫檢查庫存、算金額、建立訂單 */
-    async create({ contact, shipping, paymentMethodId, note }) {
+    async create({ contact, shipping, paymentMethodId, note, hp }) {
       const lines = cart.items();
       if (!lines.length) throw new Error("購物車是空的");
-      const view = await rpc("shop_place_order", { p_slug: SLUG, p_order: {
+      const view = await rpc("shop_place_order", { p_slug: shopSlug(), p_order: {
         items: lines.map(l => ({ variantId: l.variantId, qty: l.qty })),
-        contact, shipping, paymentMethodId, note: note || "", coupon: cart.coupon(),
+        contact, shipping, paymentMethodId, note: note || "", coupon: cart.coupon(), hp: hp || "",
       } });
       guestPass[view.number] = { view, phone: contact.phone };
       cart.clear();
@@ -616,7 +747,8 @@
       number = String(number || "").trim().toUpperCase();
       phone = String(phone || "").replace(/[\s-]/g, "");
       if (!number || !phone) throw new Error("請填寫訂單編號和手機");
-      const view = await rpc("shop_order_lookup", { p_slug: SLUG, p_number: number, p_phone: phone });
+      const view = await rpc("shop_order_lookup", { p_slug: shopSlug(), p_number: number, p_phone: phone });
+      if (!view) throw new Error("查不到這筆訂單，請確認訂單編號和下單時填的手機");
       guestPass[view.number] = { view, phone };
       return view;
     },
@@ -628,12 +760,13 @@
     },
     async cancelByCustomer(number) {
       if ((cache.myOrders || []).some(o => o.number === number)) {
-        await rpc("shop_member_cancel", { p_slug: SLUG, p_number: number });
+        await rpc("shop_member_cancel", { p_slug: shopSlug(), p_number: number });
         await loadMember();
       } else {
         const pass = guestPass[number];
         if (!pass) throw new Error("找不到這筆訂單");
-        const view = await rpc("shop_cancel_order", { p_slug: SLUG, p_number: number, p_phone: pass.phone });
+        const view = await rpc("shop_cancel_order", { p_slug: shopSlug(), p_number: number, p_phone: pass.phone });
+        if (!view) throw new Error("找不到這筆訂單");
         guestPass[number] = { view, phone: pass.phone };
       }
       await loadShop().catch(() => {});
@@ -696,10 +829,14 @@
     };
   }
 
+  /* ---------- 報表：由資料庫計算（全部訂單） ---------- */
+  const reports = { get: (from, to) => rpc("admin_report", { p_store: adminStore.id, p_from: from, p_to: to }) };
+
   window.DB = {
-    mode: "remote", features, ready, admin, takeNotice, boot,
+    mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
+    shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases,
+    inventory, suppliers, purchases, reports,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

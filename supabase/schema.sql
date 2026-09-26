@@ -1,5 +1,5 @@
 -- =========================================================
--- 開店平台 · 資料庫設定（v0.8：第一＋第二階段）
+-- 開店平台 · 資料庫設定（v0.12：多商家＋上線前防護＋報表＋佈景主題）
 --
 -- 用法：Supabase 後台左邊「SQL Editor」→ New query →
 --       把這整個檔案貼上 → 按 Run。可以重複執行，不會重複建資料。
@@ -11,7 +11,8 @@
 --   2. 前台函式（shop_*）只回傳公開資訊；金額、折扣、庫存都在
 --      伺服器重算，瀏覽器送來的價格一律不採用。
 --   3. 後台函式（admin_*）會先確認登入者是這家店的管理者。
---   4. 設定用函式（setup_*）只能在 SQL Editor 執行。
+--   4. 平台函式（platform_*）只有平台管理者能用。
+--   5. 設定用函式（setup_*）只能在 SQL Editor 執行。
 -- =========================================================
 
 create extension if not exists pgcrypto;
@@ -194,11 +195,64 @@ create table if not exists purchases (
   unique (store_id, number)
 );
 
+-- ---------- v0.9：多商家、年費方案、平台管理 ----------
+-- plan：trial 試用／paid 已繳年費／free 平台自己的免費商店
+-- 營業中 = 沒被停用，而且（free 或 active_until 還沒過）
+alter table stores add column if not exists plan text not null default 'trial';
+alter table stores add column if not exists active_until date;
+alter table stores add column if not exists suspended boolean not null default false;
+alter table stores add column if not exists suspend_reason text not null default '';
+alter table stores add column if not exists platform_note text not null default '';
+alter table stores add column if not exists created_by uuid references auth.users(id) on delete set null;
+-- 從舊版升級：原本就存在的商店（範例商店）設成免費，不會因為沒有到期日而關店
+update stores set plan = 'free' where plan = 'trial' and active_until is null;
+alter table stores drop constraint if exists stores_plan_check;
+alter table stores add constraint stores_plan_check check (plan in ('trial', 'paid', 'free'));
+
+create table if not exists platform_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+create table if not exists platform_settings (
+  id int primary key default 1 check (id = 1),
+  settings jsonb not null default '{}'::jsonb
+);
+insert into platform_settings(id, settings) values (1, '{"platformName":"開店平台","annualFee":12000,"trialDays":14,"signupOpen":true,"maxStoresPerUser":3,"contactEmail":"","contactLine":""}'::jsonb)
+  on conflict (id) do nothing;
+-- 年費與方案異動紀錄：收款、延長、改方案、停用、恢復
+create table if not exists platform_billing_log (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  kind text not null check (kind in ('payment', 'extend', 'plan', 'suspend', 'resume', 'create')),
+  amount int not null default 0,
+  from_date date,
+  to_date date,
+  note text not null default '',
+  by_email text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists platform_billing_log_idx on platform_billing_log(created_at desc);
+
+-- ---------- v0.10：頻率限制（防灌單、防猜訂單） ----------
+create table if not exists rate_events (
+  bucket text not null,
+  key text not null,
+  at timestamptz not null default now()
+);
+create index if not exists rate_events_idx on rate_events(bucket, key, at);
+create index if not exists orders_phone_idx on orders(store_id, (contact ->> 'phone'), status);
+
+-- ---------- v0.11：報表用 ----------
+-- 進貨入庫時記下進價，報表才算得出「進貨花費」；舊資料從備註裡的「進價 NT$…」補上
+alter table stock_movements add column if not exists unit_cost int;
+update stock_movements set unit_cost = replace(substring(note from '進價 NT\$([0-9,]+)'), ',', '')::int
+  where type = 'purchase' and unit_cost is null and note ~ '進價 NT\$[0-9,]+';
+
 -- 全部上鎖：開啟 RLS、不給任何直接存取
 do $$
 declare t text;
 begin
-  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements','suppliers','purchases'] loop
+  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements','suppliers','purchases','platform_admins','platform_settings','platform_billing_log','rate_events'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon, authenticated', t);
   end loop;
@@ -240,6 +294,78 @@ begin
   select * into s from stores where slug = p_slug;
   if not found then raise exception '找不到這家商店'; end if;
   return s;
+end $$;
+
+-- 商店狀態：suspended 停用／free 免費／trial 試用中／paid 已繳費／expired 已到期
+create or replace function _store_status(s stores) returns text language sql stable as $$
+  select case
+    when s.suspended then 'suspended'
+    when s.plan = 'free' then 'free'
+    when s.active_until is null or s.active_until < _today() then 'expired'
+    else s.plan end
+$$;
+create or replace function _store_open(s stores) returns boolean language sql stable as $$
+  select _store_status(s) in ('free', 'trial', 'paid')
+$$;
+create or replace function _billing_json(s stores) returns jsonb language sql stable as $$
+  select jsonb_build_object('plan', s.plan, 'status', _store_status(s), 'open', _store_open(s),
+    'activeUntil', s.active_until, 'daysLeft', case when s.active_until is null then null else s.active_until - _today() end,
+    'suspended', s.suspended, 'suspendReason', s.suspend_reason)
+$$;
+create or replace function _platform_settings() returns jsonb language sql stable as $$
+  select settings from platform_settings where id = 1
+$$;
+create or replace function _is_platform_admin() returns boolean language sql stable as $$
+  select auth.uid() is not null and exists (select 1 from platform_admins where user_id = auth.uid())
+$$;
+create or replace function _require_platform() returns void language plpgsql stable as $$
+begin
+  if auth.uid() is null then raise exception '請先登入'; end if;
+  if not _is_platform_admin() then raise exception '你沒有平台管理權限'; end if;
+end $$;
+create or replace function _closed_msg(s stores) returns text language sql stable as $$
+  select case when _store_status(s) = 'suspended' then '這家商店目前暫停營業' else '這家商店目前休息中' end
+$$;
+
+-- 呼叫者的 IP（Supabase 會帶 x-forwarded-for；拿不到就是 null）
+create or replace function _client_ip() returns text language plpgsql stable as $$
+declare h json;
+begin
+  begin h := current_setting('request.headers', true)::json; exception when others then return null; end;
+  if h is null then return null; end if;
+  return nullif(trim(split_part(coalesce(h ->> 'cf-connecting-ip', h ->> 'x-real-ip', h ->> 'x-forwarded-for', ''), ',', 1)), '');
+end $$;
+
+-- 頻率限制：同一個 key 在 p_window 內最多 p_max 次，超過就擋下
+-- （只有整個動作成功才會記一次；失敗的動作會連同這筆紀錄一起復原）
+create or replace function _rate_hit(p_bucket text, p_key text, p_max int, p_window interval, p_msg text default null) returns void
+language plpgsql volatile as $$
+declare n int;
+begin
+  if p_key is null or p_key = '' then return; end if;
+  delete from rate_events where bucket = p_bucket and key = p_key and at < now() - p_window;
+  select count(*) into n from rate_events where bucket = p_bucket and key = p_key;
+  if n >= p_max then raise exception '%', coalesce(p_msg, '操作太頻繁，請稍後再試'); end if;
+  insert into rate_events(bucket, key) values (p_bucket, p_key);
+end $$;
+
+-- 超過設定天數還沒付款的「銀行轉帳」訂單自動取消、庫存加回（商家在設定頁開啟，0 = 不自動取消）
+create or replace function _expire_unpaid(p_store uuid) returns int language plpgsql volatile as $$
+declare days int; o orders; it jsonb; n int := 0;
+begin
+  select coalesce((settings ->> 'autoCancelDays')::int, 0) into days from stores where id = p_store;
+  if days is null or days <= 0 then return 0; end if;
+  for o in select * from orders where store_id = p_store and status = 'pending_payment' and payment ->> 'methodId' = 'transfer'
+             and created_at < now() - make_interval(days => days) for update loop
+    for it in select * from jsonb_array_elements(o.items) loop
+      update variants set stock = stock + (it ->> 'qty')::int where id = (it ->> 'variantId')::uuid and store_id = p_store;
+      if found then perform _log_move(p_store, (it ->> 'variantId')::uuid, (it ->> 'qty')::int, 'cancel', o.number, '逾期未付款自動取消，庫存加回'); end if;
+    end loop;
+    update orders set status = 'cancelled', history = history || jsonb_build_array(jsonb_build_object('status', 'cancelled', 'at', now(),
+      'note', '超過 ' || days || ' 天未付款，系統自動取消')) where id = o.id;
+    n := n + 1;
+  end loop;
+  return n;
 end $$;
 
 -- 後台權限檢查：登入者必須是這家店的成員
@@ -308,6 +434,7 @@ create or replace function _public_settings(s stores) returns jsonb language sql
     'name', s.settings ->> 'name', 'tagline', s.settings ->> 'tagline',
     'email', s.settings ->> 'email', 'phone', s.settings ->> 'phone',
     'freeShippingThreshold', coalesce((s.settings ->> 'freeShippingThreshold')::int, 0),
+    'theme', coalesce(s.settings -> 'theme', '{}'::jsonb),
     'shippingMethods', coalesce((select jsonb_agg(m) from jsonb_array_elements(s.settings -> 'shippingMethods') m where (m ->> 'enabled')::boolean), '[]'::jsonb),
     'paymentMethods', coalesce((select jsonb_agg(m) from jsonb_array_elements(s.settings -> 'paymentMethods') m where (m ->> 'enabled')::boolean), '[]'::jsonb))
 $$;
@@ -484,8 +611,15 @@ language plpgsql stable security definer set search_path = public as $$
 declare s stores;
 begin
   s := _store_by_slug(p_slug);
+  if not _store_open(s) then
+    -- 關店中：只回商店名稱與聯絡方式，前台顯示「暫停營業」
+    return jsonb_build_object('store', jsonb_build_object('id', s.id, 'slug', s.slug), 'closed', true, 'closedMessage', _closed_msg(s),
+      'settings', _public_settings(s), 'categories', '[]'::jsonb, 'products', '[]'::jsonb, 'promotions', '[]'::jsonb,
+      'memberTiers', jsonb_build_object('enabled', false, 'period', 'all', 'tiers', '[]'::jsonb));
+  end if;
   return jsonb_build_object(
     'store', jsonb_build_object('id', s.id, 'slug', s.slug),
+    'closed', false,
     'settings', _public_settings(s),
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
     'products', coalesce((select jsonb_agg(_product_json(p, false) order by p.created_at desc) from products p where p.store_id = s.id and p.status = 'active'), '[]'::jsonb),
@@ -499,6 +633,7 @@ returns jsonb language plpgsql stable security definer set search_path = public 
 declare s stores; q jsonb;
 begin
   s := _store_by_slug(p_slug);
+  if not _store_open(s) then raise exception '%', _closed_msg(s) || '，暫時無法下單'; end if;
   q := _quote(s.id, p_items, p_ship, p_coupon, nullif(regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g'), ''), _member_id(s.id));
   return jsonb_set(q, '{lines}', (select coalesce(jsonb_agg(l - 'cost'), '[]'::jsonb) from jsonb_array_elements(q -> 'lines') l));
 end $$;
@@ -519,6 +654,19 @@ declare
 begin
   select * into s from stores where slug = p_slug for update;   -- 同一家店的下單排隊處理，避免超賣與單號重複
   if not found then raise exception '找不到這家商店'; end if;
+  if not _store_open(s) then raise exception '%', _closed_msg(s) || '，暫時無法下單'; end if;
+  -- 防灌單：隱藏欄位被填 = 機器人；同一支手機、同一個 IP、整家店都有上限
+  if coalesce(p_order ->> 'hp', '') <> '' then raise exception '下單失敗，請重新整理頁面再試一次'; end if;
+  perform _expire_unpaid(s.id);
+  if v_phone ~ '^09\d{8}$' then
+    if (select count(*) from orders where store_id = s.id and contact ->> 'phone' = v_phone and status = 'pending_payment') >= 5 then
+      raise exception '這支手機還有 5 筆訂單尚未付款，請先付款或取消舊訂單後再下單';
+    end if;
+    perform _rate_hit('order-phone', s.id || ':' || v_phone, 5, interval '10 minutes', '下單太頻繁，請 10 分鐘後再試');
+    perform _rate_hit('order-phone-day', s.id || ':' || v_phone, 20, interval '1 day', '這支手機今天下單次數已達上限，請明天再試或聯絡客服');
+  end if;
+  perform _rate_hit('order-ip', _client_ip(), 20, interval '10 minutes', '下單太頻繁，請稍後再試');
+  perform _rate_hit('order-store', s.id::text, 300, interval '1 hour', '目前訂單太多，請稍後再試');
   if v_name = '' or v_phone = '' then raise exception '請填寫姓名與手機'; end if;
   if length(v_name) > 40 then raise exception '姓名太長'; end if;
   if v_phone !~ '^09\d{8}$' then raise exception '手機格式應為 09 開頭共 10 碼'; end if;
@@ -589,14 +737,17 @@ begin
 end $$;
 
 -- 免登入查訂單：訂單編號＋下單手機都對才給看
+-- 找不到時回傳 null（不丟錯誤），這樣查詢次數才會被記下來，防止有人一直猜手機號碼
 create or replace function shop_order_lookup(p_slug text, p_number text, p_phone text) returns jsonb
-language plpgsql stable security definer set search_path = public as $$
+language plpgsql volatile security definer set search_path = public as $$
 declare s stores; o orders;
 begin
   s := _store_by_slug(p_slug);
+  perform _rate_hit('lookup-ip', _client_ip(), 30, interval '10 minutes', '查詢太頻繁，請 10 分鐘後再試');
+  perform _rate_hit('lookup-no', s.id || ':' || upper(trim(coalesce(p_number, ''))), 10, interval '10 minutes', '這筆訂單查詢太多次，請 10 分鐘後再試');
   select * into o from orders where store_id = s.id and upper(number) = upper(trim(p_number))
     and contact ->> 'phone' = regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g');
-  if not found then raise exception '查不到這筆訂單，請確認訂單編號和下單時填的手機'; end if;
+  if not found then return null; end if;
   return _order_customer_json(o) || jsonb_build_object('paymentInstruction',
     (select m ->> 'instruction' from jsonb_array_elements(s.settings -> 'paymentMethods') m where m ->> 'id' = o.payment ->> 'methodId'));
 end $$;
@@ -609,7 +760,10 @@ begin
   s := _store_by_slug(p_slug);
   select * into o from orders where store_id = s.id and upper(number) = upper(trim(p_number))
     and contact ->> 'phone' = regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g') for update;
-  if not found then raise exception '找不到這筆訂單'; end if;
+  if not found then
+    perform _rate_hit('lookup-no', s.id || ':' || upper(trim(coalesce(p_number, ''))), 10, interval '10 minutes', '這筆訂單查詢太多次，請 10 分鐘後再試');
+    return null;
+  end if;
   if o.status <> 'pending_payment' then raise exception '這筆訂單已經在處理，請聯絡客服取消'; end if;
   for it in select * from jsonb_array_elements(o.items) loop
     update variants set stock = stock + (it ->> 'qty')::int where id = (it ->> 'variantId')::uuid and store_id = s.id;
@@ -626,19 +780,27 @@ end $$;
 
 create or replace function admin_my_stores() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'slug', s.slug, 'name', s.settings ->> 'name', 'role', m.role)), '[]'::jsonb)
+  select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'slug', s.slug, 'name', s.settings ->> 'name', 'role', m.role,
+    'billing', _billing_json(s), 'createdAt', s.created_at) order by s.created_at), '[]'::jsonb)
   from store_members m join stores s on s.id = m.store_id where m.user_id = auth.uid()
 $$;
 
 -- 後台一次載入整家店的資料（小型商店適用；訂單取最近 1000 筆）
+-- 訂單只載入「最近 120 天」和「還沒結案的」（最多 1500 筆）；更早的用 admin_search_orders 查
+-- 會員的累積消費、各狀態訂單數由伺服器算全部訂單
 create or replace function admin_bootstrap(p_store uuid) returns jsonb
-language plpgsql stable security definer set search_path = public as $$
+language plpgsql volatile security definer set search_path = public as $$
 declare s stores;
 begin
   perform _require_member(p_store);
+  perform _expire_unpaid(p_store);
   select * into s from stores where id = p_store;
   return jsonb_build_object(
-    'store', jsonb_build_object('id', s.id, 'slug', s.slug),
+    'store', jsonb_build_object('id', s.id, 'slug', s.slug, 'createdAt', s.created_at),
+    'billing', _billing_json(s),
+    'platform', (select jsonb_build_object('platformName', x ->> 'platformName', 'annualFee', (x ->> 'annualFee')::int,
+        'contactEmail', x ->> 'contactEmail', 'contactLine', x ->> 'contactLine') from _platform_settings() x),
+    'isPlatformAdmin', _is_platform_admin(),
     'settings', s.settings,
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
     'products', coalesce((select jsonb_agg(_product_json(p, true) order by p.created_at desc) from products p where p.store_id = s.id), '[]'::jsonb),
@@ -654,10 +816,78 @@ begin
     'movements', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'at', m.at, 'productId', m.product_id, 'variantId', m.variant_id,
         'name', m.name, 'optionText', m.option_text, 'sku', m.sku, 'delta', m.delta, 'after', m.after, 'type', m.type, 'ref', m.ref, 'note', m.note) order by m.at)
         from (select * from stock_movements where store_id = s.id order by at desc limit 1000) m), '[]'::jsonb),
-    'orders', coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from (select * from orders where store_id = s.id order by created_at desc limit 1000) o), '[]'::jsonb),
+    'orders', coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from (select * from orders where store_id = s.id
+        and (created_at >= now() - interval '120 days' or status in ('pending_payment', 'paid', 'shipped')) order by created_at desc limit 1500) o), '[]'::jsonb),
+    'orderTotal', (select count(*) from orders where store_id = s.id),
+    'statusCounts', coalesce((select jsonb_object_agg(status, n) from (select status, count(*) n from orders where store_id = s.id group by status) x), '{}'::jsonb),
+    'customerStats', coalesce((select jsonb_object_agg(x.customer_id, jsonb_build_object('n', x.n, 'spent', x.spent, 'last', x.last, 'tierSpent', x.tier_spent)) from (
+        select customer_id, count(*) filter (where status <> 'cancelled') n, coalesce(sum(total) filter (where status <> 'cancelled'), 0) spent,
+          max(created_at) filter (where status <> 'cancelled') last,
+          coalesce(sum(total) filter (where status in ('paid', 'shipped', 'completed')
+            and (s.member_tiers ->> 'period' is distinct from '12m' or created_at >= now() - interval '365 days')), 0) tier_spent
+        from orders where store_id = s.id and customer_id is not null group by customer_id) x), '{}'::jsonb),
     'coupons', coalesce((select jsonb_agg(_coupon_json(c) order by c.created_at desc) from coupons c where c.store_id = s.id), '[]'::jsonb),
     'promotions', coalesce((select jsonb_agg(_promotion_json(p) order by p.created_at desc) from promotions p where p.store_id = s.id), '[]'::jsonb),
     'loadedAt', now());
+end $$;
+
+-- 訂單搜尋（分頁）：狀態、關鍵字（編號、姓名、手機）、日期（台灣時間）
+create or replace function admin_search_orders(p_store uuid, p_status text default '', p_q text default '', p_from date default null, p_to date default null,
+  p_offset int default 0, p_limit int default 50) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_q text := lower(trim(coalesce(p_q, ''))); v_total int; v_rows jsonb;
+begin
+  perform _require_member(p_store);
+  p_limit := least(greatest(coalesce(p_limit, 50), 0), 20000);
+  p_offset := greatest(coalesce(p_offset, 0), 0);
+  with f as (select * from orders o where o.store_id = p_store
+    and (coalesce(p_status, '') = '' or o.status = p_status)
+    and (p_from is null or (o.created_at at time zone 'Asia/Taipei')::date >= p_from)
+    and (p_to is null or (o.created_at at time zone 'Asia/Taipei')::date <= p_to)
+    and (v_q = '' or lower(o.number) like '%' || v_q || '%' or lower(o.contact ->> 'name') like '%' || v_q || '%' or (o.contact ->> 'phone') like '%' || v_q || '%'))
+  select (select count(*) from f),
+    coalesce((select jsonb_agg(_order_json(x) order by x.created_at desc) from (select * from f order by created_at desc offset p_offset limit p_limit) x), '[]'::jsonb)
+  into v_total, v_rows;
+  return jsonb_build_object('total', v_total, 'rows', v_rows);
+end $$;
+
+create or replace function admin_get_order(p_store uuid, p_id text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare o orders;
+begin
+  perform _require_member(p_store);
+  select * into o from orders where store_id = p_store and (id::text = p_id or upper(number) = upper(p_id));
+  if not found then return null; end if;
+  return _order_json(o);
+end $$;
+
+create or replace function admin_customer_orders(p_store uuid, p_customer uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _require_member(p_store);
+  return coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from
+    (select * from orders where store_id = p_store and customer_id = p_customer order by created_at desc limit 500) o), '[]'::jsonb);
+end $$;
+
+-- 佈景主題檢查：配色、主色、版型、文字長度、Logo 必須是這家店自己資料夾裡的圖
+create or replace function _theme_problem(p_store uuid, t jsonb) returns text language plpgsql immutable as $$
+begin
+  if t is null or jsonb_typeof(t) = 'null' then return null; end if;
+  if jsonb_typeof(t) <> 'object' then return '外觀設定格式不正確'; end if;
+  if coalesce(t ->> 'preset', 'warm') not in ('warm', 'forest', 'ocean', 'rose', 'sun', 'mono') then return '配色不正確'; end if;
+  if coalesce(t ->> 'accent', '') <> '' and (t ->> 'accent') !~ '^#[0-9a-fA-F]{6}$' then return '主色要是 #RRGGBB 格式'; end if;
+  if coalesce(t ->> 'layout', 'grid') not in ('grid', 'banner', 'magazine') then return '首頁版型不正確'; end if;
+  if coalesce(t ->> 'cols', '4') not in ('2', '3', '4') then return '每列商品數要是 2～4'; end if;
+  if coalesce(t ->> 'ratio', 'square') not in ('square', 'portrait') then return '圖片比例不正確'; end if;
+  if coalesce(t ->> 'font', 'sans') not in ('sans', 'serif') then return '字體不正確'; end if;
+  if length(coalesce(t ->> 'notice', '')) > 80 then return '公告最多 80 個字'; end if;
+  if length(coalesce(t ->> 'heroTitle', '')) > 40 then return '橫幅標題最多 40 個字'; end if;
+  if length(coalesce(t ->> 'heroText', '')) > 120 then return '橫幅說明最多 120 個字'; end if;
+  if t -> 'logo' is not null and jsonb_typeof(t -> 'logo') <> 'null' then
+    if position('/storage/v1/object/public/product-images/' || p_store::text || '/' in coalesce(t #>> '{logo,url}', '')) = 0
+       or coalesce(t #>> '{logo,path}', '') not like p_store::text || '/%' then return 'Logo 圖片不正確，請重新上傳'; end if;
+  end if;
+  return null;
 end $$;
 
 create or replace function admin_save_settings(p_store uuid, p_settings jsonb) returns void
@@ -666,6 +896,8 @@ begin
   perform _require_member(p_store);
   if coalesce(trim(p_settings ->> 'name'), '') = '' then raise exception '請填寫商店名稱'; end if;
   if not exists (select 1 from jsonb_array_elements(p_settings -> 'shippingMethods') m where (m ->> 'enabled')::boolean) then raise exception '至少要開一種取貨方式'; end if;
+  if coalesce(p_settings ->> 'autoCancelDays', '0') !~ '^\d{1,2}$' or (p_settings ->> 'autoCancelDays')::int > 30 then raise exception '自動取消天數要 0～30 天'; end if;
+  if _theme_problem(p_store, p_settings -> 'theme') is not null then raise exception '%', _theme_problem(p_store, p_settings -> 'theme'); end if;
   if not exists (select 1 from jsonb_array_elements(p_settings -> 'paymentMethods') m where (m ->> 'enabled')::boolean) then raise exception '至少要開一種付款方式'; end if;
   update stores set settings = p_settings where id = p_store;
 end $$;
@@ -1121,6 +1353,8 @@ begin
         stock = stock + n
       where id = (it ->> 'variantId')::uuid;
       perform _log_move(p_store, (it ->> 'variantId')::uuid, n, 'purchase', po.number, po.supplier_name || '，進價 ' || _money((it ->> 'cost')::int));
+      update stock_movements set unit_cost = (it ->> 'cost')::int where id = (select id from stock_movements where store_id = p_store
+        and variant_id = (it ->> 'variantId')::uuid and ref = po.number and type = 'purchase' and unit_cost is null order by at desc limit 1);
       it := jsonb_set(it, '{received}', to_jsonb((it ->> 'received')::int + n));
       any_in := true;
       parts := parts || ((it ->> 'name') || case when it ->> 'optionText' <> '' then '／' || (it ->> 'optionText') else '' end || ' ×' || n);
@@ -1164,6 +1398,299 @@ begin
 end $$;
 
 -- =========================================================
+-- v0.11：銷售／毛利報表
+-- 營收只算「已付款」的訂單（待出貨、已出貨、已完成）；日期用台灣時間
+-- 毛利 = 商品金額 − 折扣 − 當時的成本（運費不算進毛利）
+-- =========================================================
+create or replace function admin_report(p_store uuid, p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_days int; v_unit text; r jsonb;
+begin
+  perform _require_member(p_store);
+  if p_from is null or p_to is null then raise exception '請選擇日期區間'; end if;
+  if p_to < p_from then raise exception '結束日期不能早於開始日期'; end if;
+  v_days := p_to - p_from + 1;
+  if v_days > 1100 then raise exception '一次最多查 3 年'; end if;
+  v_unit := case when v_days <= 62 then 'day' else 'month' end;
+
+  with o as (
+    select *, (created_at at time zone 'Asia/Taipei')::date as d from orders
+    where store_id = p_store and (created_at at time zone 'Asia/Taipei')::date between p_from and p_to
+  ),
+  paid as (
+    select o.*, coalesce(o.customer_id::text, 'p:' || (o.contact ->> 'phone')) as who,
+      (select coalesce(sum((i ->> 'qty')::int * coalesce((i ->> 'cost')::int, 0)), 0) from jsonb_array_elements(o.items) i) as cost
+    from o where status in ('paid', 'shipped', 'completed')
+  ),
+  -- 每位顧客「第一次付款」的日期（看全部歷史），用來分新客／回購
+  firsts as (
+    select coalesce(customer_id::text, 'p:' || (contact ->> 'phone')) as who, min((created_at at time zone 'Asia/Taipei')::date) as first_d
+    from orders where store_id = p_store and status in ('paid', 'shipped', 'completed') group by 1
+  ),
+  its as (select p.id, i from paid p, jsonb_array_elements(p.items) i),
+  buckets as (
+    select g::date as b from generate_series(
+      case when v_unit = 'day' then p_from else date_trunc('month', p_from)::date end, p_to,
+      case when v_unit = 'day' then interval '1 day' else interval '1 month' end) g
+  ),
+  moves as (
+    select m.*, coalesce(pu.supplier_name, '') as supplier from stock_movements m
+    left join purchases pu on pu.store_id = m.store_id and pu.number = m.ref
+    where m.store_id = p_store and m.type = 'purchase' and (m.at at time zone 'Asia/Taipei')::date between p_from and p_to
+  )
+  select jsonb_build_object(
+    'from', p_from, 'to', p_to, 'unit', v_unit,
+    'summary', (select jsonb_build_object(
+        'orders', count(*), 'revenue', coalesce(sum(total), 0), 'goods', coalesce(sum(subtotal), 0),
+        'discount', coalesce(sum(discount), 0), 'shipping', coalesce(sum(shipping_fee), 0), 'cost', coalesce(sum(cost), 0),
+        'gross', coalesce(sum(subtotal - discount - cost), 0),
+        'customers', count(distinct who),
+        'newCustomers', (select count(*) from firsts f where f.who in (select who from paid) and f.first_d >= p_from),
+        'units', (select coalesce(sum((i ->> 'qty')::int), 0) from its)) from paid),
+    'pending', (select jsonb_build_object('orders', count(*), 'amount', coalesce(sum(total), 0)) from o where status = 'pending_payment'),
+    'cancelled', (select jsonb_build_object('orders', count(*), 'amount', coalesce(sum(total), 0)) from o where status = 'cancelled'),
+    'series', (select coalesce(jsonb_agg(jsonb_build_object('date', b.b,
+        'revenue', coalesce(x.revenue, 0), 'orders', coalesce(x.n, 0), 'gross', coalesce(x.gross, 0)) order by b.b), '[]'::jsonb)
+      from buckets b left join (
+        select case when v_unit = 'day' then d else date_trunc('month', d)::date end as b,
+          sum(total) revenue, count(*) n, sum(subtotal - discount - cost) gross from paid group by 1) x on x.b = b.b),
+    'products', (select coalesce(jsonb_agg(t order by (t ->> 'sales')::int desc), '[]'::jsonb) from (
+        select jsonb_build_object('productId', i ->> 'productId', 'name', max(i ->> 'name'),
+          'qty', sum((i ->> 'qty')::int), 'sales', sum((i ->> 'qty')::int * (i ->> 'price')::int),
+          'cost', sum((i ->> 'qty')::int * coalesce((i ->> 'cost')::int, 0)),
+          'orders', count(distinct id)) t
+        from its group by i ->> 'productId' order by sum((i ->> 'qty')::int * (i ->> 'price')::int) desc limit 50) z),
+    'variants', (select coalesce(jsonb_agg(t order by (t ->> 'qty')::int desc), '[]'::jsonb) from (
+        select jsonb_build_object('variantId', i ->> 'variantId', 'name', max(i ->> 'name'), 'optionText', max(i ->> 'optionText'), 'sku', max(i ->> 'sku'),
+          'qty', sum((i ->> 'qty')::int), 'sales', sum((i ->> 'qty')::int * (i ->> 'price')::int)) t
+        from its group by i ->> 'variantId' order by sum((i ->> 'qty')::int) desc limit 50) z),
+    'payments', (select coalesce(jsonb_agg(jsonb_build_object('name', n, 'orders', c, 'amount', a) order by a desc), '[]'::jsonb)
+      from (select payment ->> 'methodName' n, count(*) c, sum(total) a from paid group by 1) z),
+    'shippings', (select coalesce(jsonb_agg(jsonb_build_object('name', n, 'orders', c, 'amount', a) order by c desc), '[]'::jsonb)
+      from (select shipping ->> 'methodName' n, count(*) c, sum(shipping_fee) a from paid group by 1) z),
+    'discounts', (select coalesce(jsonb_agg(jsonb_build_object('kind', k, 'label', l, 'orders', c, 'amount', a) order by a desc), '[]'::jsonb)
+      from (select dd ->> 'kind' k, case dd ->> 'kind' when 'coupon' then '優惠碼 ' || (dd ->> 'code') when 'promo' then '滿額活動' when 'member' then '會員等級' else dd ->> 'kind' end l,
+              count(*) c, sum((dd ->> 'amount')::int) a
+            from paid p, jsonb_array_elements(p.discounts) dd group by 1, 2) z),
+    'purchases', (select jsonb_build_object('units', coalesce(sum(delta), 0), 'amount', coalesce(sum(delta * coalesce(unit_cost, 0)), 0),
+        'bySupplier', coalesce((select jsonb_agg(jsonb_build_object('name', s, 'units', u, 'amount', a) order by a desc)
+          from (select nullif(supplier, '') s, sum(delta) u, sum(delta * coalesce(unit_cost, 0)) a from moves group by 1) z), '[]'::jsonb)) from moves)
+  ) into r;
+  return r;
+end $$;
+
+-- =========================================================
+-- v0.9：商家自助開店
+-- =========================================================
+
+-- 平台公開資訊（首頁用）：平台名稱、年費、試用天數、是否開放開店
+create or replace function platform_public() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('platformName', x ->> 'platformName', 'annualFee', (x ->> 'annualFee')::int,
+    'trialDays', (x ->> 'trialDays')::int, 'signupOpen', coalesce((x ->> 'signupOpen')::boolean, false),
+    'contactEmail', x ->> 'contactEmail', 'contactLine', x ->> 'contactLine')
+  from _platform_settings() x
+$$;
+
+-- 商店網址代號規則：3～30 個小寫英文、數字、減號，頭尾不能是減號
+create or replace function _slug_problem(p_slug text) returns text language sql immutable as $$
+  select case
+    when p_slug is null or p_slug = '' then '請填寫商店網址代號'
+    when length(p_slug) < 3 or length(p_slug) > 30 then '商店網址代號要 3～30 個字'
+    when p_slug !~ '^[a-z0-9][a-z0-9-]*[a-z0-9]$' then '商店網址代號只能用小寫英文、數字和減號（-），頭尾不能是減號'
+    when p_slug ~ '--' then '商店網址代號不能有連續兩個減號'
+    when p_slug = any (array['admin','platform','api','www','app','apps','shop','shops','store','stores','demo','test','help','support',
+      'login','signup','register','static','assets','mail','email','home','official','system','root','null','undefined']) then '這個代號保留給平台使用，請換一個'
+    else null end
+$$;
+
+create or replace function admin_slug_available(p_slug text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_slug text := lower(trim(coalesce(p_slug, ''))); prob text;
+begin
+  if auth.uid() is null then raise exception '請先登入'; end if;
+  prob := _slug_problem(v_slug);
+  if prob is null and exists (select 1 from stores where slug = v_slug) then prob := '這個代號已經有人用了，請換一個'; end if;
+  return jsonb_build_object('slug', v_slug, 'ok', prob is null, 'message', coalesce(prob, '可以使用'));
+end $$;
+
+-- 建立商店：登入者（信箱已確認）變成店主，開始試用
+create or replace function admin_create_store(p_name text, p_slug text) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare
+  v_name text := trim(coalesce(p_name, ''));
+  v_slug text := lower(trim(coalesce(p_slug, '')));
+  cfg jsonb := _platform_settings();
+  v_email text; confirmed timestamptz; prob text; sid uuid; owned int;
+  v_trial int := greatest(coalesce((cfg ->> 'trialDays')::int, 14), 0);
+  v_max int := greatest(coalesce((cfg ->> 'maxStoresPerUser')::int, 3), 1);
+begin
+  if auth.uid() is null then raise exception '請先登入'; end if;
+  select email, email_confirmed_at into v_email, confirmed from auth.users where id = auth.uid();
+  if confirmed is null then raise exception '請先到信箱點確認連結，完成 Email 驗證'; end if;
+  if not _is_platform_admin() then
+    if not coalesce((cfg ->> 'signupOpen')::boolean, false) then raise exception '平台目前暫停開放新商店，請聯絡平台'; end if;
+    select count(*) into owned from store_members where user_id = auth.uid() and role = 'owner';
+    if owned >= v_max then raise exception '每個帳號最多建立 % 家商店', v_max; end if;
+  end if;
+  if v_name = '' then raise exception '請填寫商店名稱'; end if;
+  if length(v_name) > 40 then raise exception '商店名稱最多 40 個字'; end if;
+  prob := _slug_problem(v_slug);
+  if prob is not null then raise exception '%', prob; end if;
+  if exists (select 1 from stores where slug = v_slug) then raise exception '這個代號已經有人用了，請換一個'; end if;
+
+  insert into stores(slug, plan, active_until, created_by, settings) values (v_slug, 'trial', _today() + v_trial, auth.uid(), jsonb_build_object(
+    'name', v_name, 'tagline', '', 'email', v_email, 'phone', '',
+    'freeShippingThreshold', 1000, 'lowStockAlert', 3,
+    'shippingMethods', jsonb_build_array(
+      jsonb_build_object('id', 'cvs711', 'name', '7-11 取貨', 'type', 'cvs', 'fee', 60, 'enabled', true),
+      jsonb_build_object('id', 'cvsfami', 'name', '全家取貨', 'type', 'cvs', 'fee', 60, 'enabled', true),
+      jsonb_build_object('id', 'home', 'name', '宅配到府', 'type', 'home', 'fee', 100, 'enabled', true)),
+    'paymentMethods', jsonb_build_array(
+      jsonb_build_object('id', 'transfer', 'name', '銀行轉帳（人工對帳）', 'enabled', true, 'integrated', false, 'instruction', '下單後請於 3 天內匯款，商家確認後出貨。（請到後台「設定」填上你的匯款帳號）'),
+      jsonb_build_object('id', 'cod', 'name', '取貨付款', 'enabled', true, 'integrated', false, 'instruction', '取貨時付款即可。'),
+      jsonb_build_object('id', 'card', 'name', '信用卡', 'enabled', false, 'integrated', false, 'instruction', '尚未串接金流。'))))
+  returning id into sid;
+  insert into store_members(store_id, user_id, role) values (sid, auth.uid(), 'owner');
+  insert into platform_billing_log(store_id, kind, from_date, to_date, note, by_email)
+    values (sid, 'create', _today(), _today() + v_trial, '商家自助開店，試用 ' || v_trial || ' 天', coalesce(v_email, ''));
+  return jsonb_build_object('id', sid, 'slug', v_slug);
+end $$;
+
+-- =========================================================
+-- v0.9：平台總控台（只有平台管理者能用）
+-- =========================================================
+
+create or replace function platform_me() returns boolean
+language sql stable security definer set search_path = public as $$
+  select _is_platform_admin()
+$$;
+
+create or replace function _platform_store_json(s stores) returns jsonb language sql stable as $$
+  select jsonb_build_object('id', s.id, 'slug', s.slug, 'name', s.settings ->> 'name', 'createdAt', s.created_at,
+    'email', s.settings ->> 'email', 'phone', s.settings ->> 'phone',
+    'billing', _billing_json(s), 'note', s.platform_note,
+    'owners', coalesce((select jsonb_agg(u.email order by m.created_at) from store_members m join auth.users u on u.id = m.user_id where m.store_id = s.id and m.role = 'owner'), '[]'::jsonb),
+    'products', (select count(*) from products p where p.store_id = s.id),
+    'customers', (select count(*) from customers c where c.store_id = s.id),
+    'orders', (select count(*) from orders o where o.store_id = s.id),
+    'orders30', (select count(*) from orders o where o.store_id = s.id and o.created_at >= now() - interval '30 days' and o.status <> 'cancelled'),
+    'revenue30', (select coalesce(sum(o.total), 0) from orders o where o.store_id = s.id and o.created_at >= now() - interval '30 days' and o.status in ('paid', 'shipped', 'completed')),
+    'lastOrderAt', (select max(o.created_at) from orders o where o.store_id = s.id))
+$$;
+
+create or replace function platform_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _require_platform();
+  return jsonb_build_object(
+    'settings', _platform_settings(),
+    'today', _today(),
+    'stores', coalesce((select jsonb_agg(_platform_store_json(s) order by s.created_at desc) from stores s), '[]'::jsonb),
+    'log', coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'storeId', l.store_id, 'storeName', s.settings ->> 'name', 'storeSlug', s.slug,
+        'kind', l.kind, 'amount', l.amount, 'from', l.from_date, 'to', l.to_date, 'note', l.note, 'by', l.by_email, 'at', l.created_at) order by l.created_at desc)
+      from (select * from platform_billing_log order by created_at desc limit 1000) l join stores s on s.id = l.store_id), '[]'::jsonb),
+    'loadedAt', now());
+end $$;
+
+create or replace function _platform_email() returns text language sql stable as $$
+  select coalesce((select email from auth.users where id = auth.uid()), '')
+$$;
+
+-- 登記收到年費：從「今天」或「目前到期日的隔天」（比較晚的那個）開始算
+create or replace function platform_record_payment(p_store uuid, p_years int, p_amount int, p_note text default '') returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; v_from date; v_to date;
+begin
+  perform _require_platform();
+  select * into s from stores where id = p_store for update;
+  if not found then raise exception '找不到這家商店'; end if;
+  if s.plan = 'free' then raise exception '這家是免費商店，不用收年費（要收費請先把方案改成試用或付費）'; end if;
+  if p_years is null or p_years < 1 or p_years > 5 then raise exception '年數要 1～5 年'; end if;
+  if p_amount is null or p_amount < 0 then raise exception '金額不正確'; end if;
+  v_from := greatest(_today(), coalesce(s.active_until, _today() - 1) + 1);
+  v_to := (v_from + make_interval(years => p_years))::date - 1;
+  update stores set plan = 'paid', active_until = v_to where id = p_store;
+  insert into platform_billing_log(store_id, kind, amount, from_date, to_date, note, by_email)
+    values (p_store, 'payment', p_amount, v_from, v_to, coalesce(trim(p_note), ''), _platform_email());
+  return jsonb_build_object('from', v_from, 'to', v_to);
+end $$;
+
+-- 直接改到期日（例如延長試用、補償天數）
+create or replace function platform_set_until(p_store uuid, p_until date, p_note text default '') returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores;
+begin
+  perform _require_platform();
+  select * into s from stores where id = p_store for update;
+  if not found then raise exception '找不到這家商店'; end if;
+  if s.plan = 'free' then raise exception '免費商店沒有到期日'; end if;
+  if p_until is null then raise exception '請選擇日期'; end if;
+  update stores set active_until = p_until where id = p_store;
+  insert into platform_billing_log(store_id, kind, from_date, to_date, note, by_email)
+    values (p_store, 'extend', s.active_until, p_until, coalesce(trim(p_note), ''), _platform_email());
+end $$;
+
+create or replace function platform_set_plan(p_store uuid, p_plan text, p_note text default '') returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; v_until date;
+begin
+  perform _require_platform();
+  if p_plan not in ('trial', 'paid', 'free') then raise exception '方案不正確'; end if;
+  select * into s from stores where id = p_store for update;
+  if not found then raise exception '找不到這家商店'; end if;
+  if s.plan = p_plan then return; end if;
+  v_until := case when p_plan = 'free' then null
+    else coalesce(s.active_until, _today() + greatest(coalesce((_platform_settings() ->> 'trialDays')::int, 14), 0)) end;
+  update stores set plan = p_plan, active_until = v_until where id = p_store;
+  insert into platform_billing_log(store_id, kind, to_date, note, by_email)
+    values (p_store, 'plan', v_until, '方案改為「' || case p_plan when 'trial' then '試用' when 'paid' then '付費' else '免費' end || '」' || coalesce('：' || nullif(trim(p_note), ''), ''), _platform_email());
+end $$;
+
+create or replace function platform_set_suspended(p_store uuid, p_suspended boolean, p_reason text default '') returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores;
+begin
+  perform _require_platform();
+  select * into s from stores where id = p_store for update;
+  if not found then raise exception '找不到這家商店'; end if;
+  if p_suspended and coalesce(trim(p_reason), '') = '' then raise exception '請填寫停用原因（商家後台會看到）'; end if;
+  update stores set suspended = p_suspended, suspend_reason = case when p_suspended then trim(p_reason) else '' end where id = p_store;
+  insert into platform_billing_log(store_id, kind, note, by_email)
+    values (p_store, case when p_suspended then 'suspend' else 'resume' end, coalesce(trim(p_reason), ''), _platform_email());
+end $$;
+
+create or replace function platform_save_note(p_store uuid, p_note text) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_platform();
+  update stores set platform_note = left(coalesce(p_note, ''), 2000) where id = p_store;
+  if not found then raise exception '找不到這家商店'; end if;
+end $$;
+
+create or replace function platform_save_settings(p_settings jsonb) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare v jsonb;
+begin
+  perform _require_platform();
+  v := jsonb_build_object(
+    'platformName', trim(coalesce(p_settings ->> 'platformName', '')),
+    'annualFee', (p_settings ->> 'annualFee')::int,
+    'trialDays', (p_settings ->> 'trialDays')::int,
+    'signupOpen', coalesce((p_settings ->> 'signupOpen')::boolean, false),
+    'maxStoresPerUser', (p_settings ->> 'maxStoresPerUser')::int,
+    'contactEmail', trim(coalesce(p_settings ->> 'contactEmail', '')),
+    'contactLine', trim(coalesce(p_settings ->> 'contactLine', '')));
+  if v ->> 'platformName' = '' then raise exception '請填寫平台名稱'; end if;
+  if (v ->> 'annualFee') is null or (v ->> 'annualFee')::int < 0 then raise exception '年費金額不正確'; end if;
+  if (v ->> 'trialDays') is null or (v ->> 'trialDays')::int not between 0 and 90 then raise exception '試用天數要 0～90 天'; end if;
+  if (v ->> 'maxStoresPerUser') is null or (v ->> 'maxStoresPerUser')::int not between 1 and 20 then raise exception '每個帳號可開店數要 1～20'; end if;
+  update platform_settings set settings = v where id = 1;
+exception when invalid_text_representation then raise exception '數字欄位請填整數';
+end $$;
+
+-- =========================================================
 -- 設定用（只能在 SQL Editor 執行）
 -- =========================================================
 
@@ -1181,13 +1708,25 @@ begin
   return '完成：' || p_email || ' 已經是商店「' || p_slug || '」的店主';
 end $$;
 
+-- 把某個已註冊的帳號設成「平台管理者」（可以進平台總控台 #platform）
+-- 用法：select setup_platform_admin('你註冊用的email');
+create or replace function setup_platform_admin(p_email text) returns text
+language plpgsql volatile security definer set search_path = public as $$
+declare uid uuid;
+begin
+  select id into uid from auth.users where lower(email) = lower(trim(p_email));
+  if uid is null then raise exception '找不到帳號 %，請先到網站後台按「建立帳號」註冊', p_email; end if;
+  insert into platform_admins(user_id) values (uid) on conflict do nothing;
+  return '完成：' || p_email || ' 已經是平台管理者';
+end $$;
+
 -- 建立範例商店「晨霧選物」（已經存在就跳過）
 create or replace function setup_demo_store() returns text
 language plpgsql volatile security definer set search_path = public as $$
 declare sid uuid; c_home uuid; c_wear uuid; c_scent uuid; pid uuid;
 begin
   if exists (select 1 from stores where slug = 'demo') then return '範例商店已經存在，沒有變更'; end if;
-  insert into stores(slug, settings) values ('demo', jsonb_build_object(
+  insert into stores(slug, plan, settings) values ('demo', 'free', jsonb_build_object(
     'name', '晨霧選物', 'tagline', '日常裡好用、耐看的小東西', 'email', 'hello@example.com', 'phone', '04-1234-5678',
     'freeShippingThreshold', 1200, 'lowStockAlert', 3,
     'shippingMethods', jsonb_build_array(
@@ -1276,7 +1815,7 @@ create policy "product images: members delete" on storage.objects for delete to 
 -- ---------- 權限：只開放該開的函式 ----------
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function shop_catalog(text), shop_quote(text, jsonb, text, text, text), shop_place_order(text, jsonb),
-  shop_order_lookup(text, text, text), shop_cancel_order(text, text, text) to anon, authenticated;
+  shop_order_lookup(text, text, text), shop_cancel_order(text, text, text), platform_public() to anon, authenticated;
 grant execute on function admin_my_stores(), admin_bootstrap(uuid), admin_save_settings(uuid, jsonb),
   admin_save_category(uuid, uuid, text), admin_delete_category(uuid, uuid),
   admin_save_product(uuid, jsonb), admin_delete_product(uuid, uuid),
@@ -1288,7 +1827,13 @@ grant execute on function admin_my_stores(), admin_bootstrap(uuid), admin_save_s
   admin_save_purchase(uuid, jsonb), admin_place_purchase(uuid, uuid), admin_receive_purchase(uuid, uuid, jsonb, text),
   admin_cancel_purchase(uuid, uuid, text), admin_delete_purchase(uuid, uuid),
   shop_member_me(text), shop_member_join(text, text, text), shop_member_update(text, text, text),
-  shop_my_orders(text), shop_member_cancel(text, text), is_store_member(text) to authenticated;
+  shop_my_orders(text), shop_member_cancel(text, text), is_store_member(text),
+  admin_slug_available(text), admin_create_store(text, text),
+  admin_search_orders(uuid, text, text, date, date, int, int), admin_get_order(uuid, text), admin_customer_orders(uuid, uuid),
+  admin_report(uuid, date, date),
+  platform_me(), platform_overview(), platform_record_payment(uuid, int, int, text), platform_set_until(uuid, date, text),
+  platform_set_plan(uuid, text, text), platform_set_suspended(uuid, boolean, text), platform_save_note(uuid, text),
+  platform_save_settings(jsonb) to authenticated;
 
 select setup_demo_store();
 
@@ -1313,4 +1858,7 @@ begin
   end if;
 end $$;
 
-select '完成：資料庫是 v0.8 版' as result;
+-- 頻率限制紀錄只需要保留一天
+delete from rate_events where at < now() - interval '1 day';
+
+select '完成：資料庫是 v0.12 版' as result;
