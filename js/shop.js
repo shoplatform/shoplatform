@@ -46,7 +46,7 @@
     if (q.freeGap > 0) out.push(`再買 ${money(q.freeGap)} 就免運`);
     // 沒登入、而且有會員等級優惠時，提醒登入
     const cfg = DB.tiers.get();
-    if (!DB.auth.current() && cfg.enabled && cfg.tiers.some(t => t.percent < 100 || t.freeShip)) {
+    if (DB.features.members && !DB.auth.current() && cfg.enabled && cfg.tiers.some(t => t.percent < 100 || t.freeShip)) {
       out.push(`會員<a href="#shop/login" data-back="${esc(Router.current)}">登入</a>後，可以享有會員等級優惠`);
     }
     return out.map(t => `<div class="s-gap">${t}</div>`).join("");
@@ -72,8 +72,10 @@
       if (ap) {
         const input = document.getElementById("cp-code");
         const go = () => {
-          try { DB.cart.applyCoupon(input.value, getPhone ? getPhone() : ""); toast("已套用優惠碼"); redraw(); }
-          catch (err) { toast(err.message, "error"); input.focus(); }
+          ap.disabled = true;
+          Promise.resolve().then(() => DB.cart.applyCoupon(input.value, getPhone ? getPhone() : ""))
+            .then(() => { toast("已套用優惠碼"); redraw(); })
+            .catch(err => { toast(err.message, "error"); ap.disabled = false; input.focus(); });
         };
         ap.addEventListener("click", go);
         input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
@@ -93,7 +95,7 @@
           <a class="s-logo" href="#shop">${esc(st.name)}</a>
           <input type="search" class="s-search" id="s-q" placeholder="搜尋商品" value="${esc(query)}" aria-label="搜尋商品">
           <nav class="s-nav" aria-label="會員">
-            ${user ? `<a href="#shop/account">${esc(user.name)}</a>` : `<a href="#shop/track">訂單查詢</a><a href="#shop/login">登入</a>`}
+            ${user ? `<a href="#shop/account">${esc(user.name)}</a>` : `<a href="#shop/track">訂單查詢</a>${DB.features.members ? `<a href="#shop/login">登入</a>` : ""}`}
           </nav>
           <a class="s-cart" href="#shop/cart">購物車 <b>${n}</b></a>
         </div></header>
@@ -222,10 +224,12 @@
   }
 
   /* ---------- 購物車 ---------- */
-  function viewCart() {
+  async function viewCart() {
     const items = DB.cart.items();
-    const q = DB.quote(items, null, { couponCode: DB.cart.coupon() });
-    const cb = couponBox(q, viewCart);
+    let q;
+    try { q = items.length ? await DB.quote(items, null, { couponCode: DB.cart.coupon() }) : null; }
+    catch (err) { return shell(`<div class="s-wrap s-page"><h1>購物車</h1><div class="s-box"><div class="empty">${esc(err.message)}<div style="margin-top:12px"><button class="btn" onclick="location.reload()">重新整理</button></div></div></div></div>`); }
+    const cb = q ? couponBox(q, viewCart) : { html: "", bind() {} };
     shell(`
       <div class="s-wrap s-page">
         <h1>購物車</h1>
@@ -293,7 +297,7 @@
             <section class="s-box">
               <div class="s-box-head"><h2>訂購人</h2>${user
                 ? `<span class="small" style="color:var(--s-muted)">以會員 ${esc(user.name)} 的身分結帳</span>`
-                : `<a class="small" href="#shop/login" data-back="shop/checkout">已經是會員？登入</a>`}</div>
+                : DB.features.members ? `<a class="small" href="#shop/login" data-back="shop/checkout">已經是會員？登入</a>` : ""}</div>
               <div class="grid-form" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
                 <div class="field"><label for="co-name">姓名</label><input type="text" id="co-name" value="${esc(form.name)}" autocomplete="name" required></div>
                 <div class="field"><label for="co-phone">手機</label><input type="tel" id="co-phone" value="${esc(form.phone)}" placeholder="0912345678" autocomplete="tel" required></div>
@@ -335,10 +339,17 @@
         ? `<div class="field"><label for="co-address">收件地址</label><input type="text" id="co-address" value="${esc(form.address)}" autocomplete="street-address"></div>`
         : `<div class="field"><label for="co-store">取貨門市</label><input type="text" id="co-store" value="${esc(form.storeName)}" placeholder="例如 中港門市"><span class="hint">超商門市地圖要等物流串接後才能選，先手動填寫。</span></div>`;
     }
-    function drawSum() {
-      const q = DB.quote(items, form.ship, { couponCode: DB.cart.coupon(), phone: form.phone });
+    let sumSeq = 0;
+    async function drawSum() {
+      const seq = ++sumSeq;
+      const box = document.getElementById("co-sum");
+      if (!box.innerHTML.trim()) box.innerHTML = `<h2>訂單內容</h2><p class="small" style="margin:0;color:var(--s-muted)">計算金額中…</p>`;
+      let q;
+      try { q = await DB.quote(items, form.ship, { couponCode: DB.cart.coupon(), phone: form.phone }); }
+      catch (err) { if (seq === sumSeq) box.innerHTML = `<h2>訂單內容</h2><div class="s-gap">${esc(err.message)}</div>`; return; }
+      if (seq !== sumSeq || !box.isConnected) return; // 已經有更新的計算結果
       const cb = couponBox(q, () => { readForm(); drawSum(); }, () => form.phone);
-      document.getElementById("co-sum").innerHTML = `
+      box.innerHTML = `
         <h2>訂單內容</h2>
         ${items.map(it => `<div class="s-sum"><div><span>${esc(it.name)}${it.optionText ? `（${esc(it.optionText)}）` : ""} × ${it.qty}</span><span>${money(it.price * it.qty)}</span></div></div>`).join("")}
         <div class="s-sum">${sumLines(q, true)}</div>
@@ -354,18 +365,24 @@
       if (e.target.name === "co-ship") drawExtra();
       if (e.target.name === "co-ship" || e.target.id === "co-phone") drawSum();
     });
-    f.addEventListener("submit", e => {
+    f.addEventListener("submit", async e => {
       e.preventDefault();
       readForm();
+      const btn = f.querySelector("button[type=submit]");
+      if (btn) { btn.disabled = true; btn.textContent = "送出中…"; }
       try {
-        const o = DB.orders.create({
+        const o = await DB.orders.create({
           contact: { name: form.name, phone: form.phone, email: form.email },
           shipping: { methodId: form.ship, address: form.address, storeName: form.storeName },
           paymentMethodId: form.pay, note: form.note,
         });
         form.note = "";
         Router.go("shop/done/" + o.number);
-      } catch (err) { toast(err.message, "error"); }
+      } catch (err) {
+        toast(err.message, "error");
+        if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "送出訂單"; }
+        drawSum();
+      }
     });
   }
 
@@ -375,7 +392,8 @@
     const st = DB.settings.get();
     const pay = o && st.paymentMethods.find(m => m.id === o.payment.methodId);
     const user = DB.auth.current();
-    const canJoin = o && !user && !DB.auth.hasAccount(o.contact.phone);
+    const canJoin = o && DB.features.members && !user && !DB.auth.hasAccount(o.contact.phone);
+    const adminOrder = o && DB.orders.get(o.number);
     shell(`
       <div class="s-wrap s-done">
         ${o ? `
@@ -390,12 +408,18 @@
             <span>用這支手機 ${esc(maskPhone(o.contact.phone))} 設定密碼，就能隨時看到這筆和以後的訂單。</span>
             <button class="btn" type="button" id="done-join">設定密碼成為會員</button>
           </div>` : user ? `<p class="small" style="margin:0;color:var(--s-muted)">這筆訂單已經放在你的<a href="#shop/account">會員中心</a>。</p>`
-            : `<p class="small" style="margin:0;color:var(--s-muted)">這支手機已經是會員，<a href="#shop/login">登入</a>後就能在會員中心看到這筆訂單。</p>`}
-          <a class="small" href="#admin/order/${esc(DB.orders.get(o.number).id)}" style="color:var(--s-muted)">（開發用）到後台看這筆訂單</a>
+            : DB.features.members ? `<p class="small" style="margin:0;color:var(--s-muted)">這支手機已經是會員，<a href="#shop/login">登入</a>後就能在會員中心看到這筆訂單。</p>`
+            : `<p class="small" style="margin:0;color:var(--s-muted)">之後可以在「<a href="#shop/track">訂單查詢</a>」用訂單編號＋手機查看進度。</p>`}
+          ${adminOrder ? `<a class="small" href="#admin/order/${esc(adminOrder.id)}" style="color:var(--s-muted)">（開發用）到後台看這筆訂單</a>` : ""}
         ` : `<div class="empty">找不到這筆訂單</div>`}
       </div>`);
     const join = document.getElementById("done-join");
     if (join) join.addEventListener("click", () => { regPrefill = { phone: o.contact.phone, name: o.contact.name, email: o.contact.email }; Router.go("shop/register"); });
+  }
+
+  function membersSoon() {
+    shell(`<div class="s-wrap s-page s-narrow"><div class="s-box"><div class="empty">會員登入即將開放。<br>現在可以用訂單編號＋手機查詢訂單。
+      <div style="margin-top:12px"><a class="btn btn-primary" href="#shop/track">訂單查詢</a></div></div></div></div>`);
   }
 
   /* ========== 會員與訂單查詢 ========== */
@@ -585,12 +609,14 @@
       </div>`);
     const f = document.getElementById("tk-form");
     f.querySelector("#tk-no").focus();
-    f.addEventListener("submit", e => {
+    f.addEventListener("submit", async e => {
       e.preventDefault();
+      const btn = f.querySelector("button[type=submit]");
+      btn.disabled = true;
       try {
-        const o = DB.orders.lookup(f.querySelector("#tk-no").value, f.querySelector("#tk-phone").value);
+        const o = await DB.orders.lookup(f.querySelector("#tk-no").value, f.querySelector("#tk-phone").value);
         Router.go("shop/order/" + o.number);
-      } catch (err) { toast(err.message, "error"); }
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
     });
   }
 
@@ -660,7 +686,7 @@
     const c = document.getElementById("mo-cancel");
     if (c) c.addEventListener("click", async () => {
       if (!await UI.confirmBox({ title: "取消這筆訂單？", body: "取消後無法復原，要買的話需要重新下單。", ok: "取消訂單", danger: true })) return;
-      try { DB.orders.cancelByCustomer(o.number); toast("訂單已取消"); viewMyOrder(o.number); }
+      try { await DB.orders.cancelByCustomer(o.number); toast("訂單已取消"); viewMyOrder(o.number); }
       catch (err) { toast(err.message, "error"); }
     });
   }
@@ -674,9 +700,9 @@
       case "cart": return viewCart();
       case "checkout": return viewCheckout();
       case "done": return viewDone(arg);
-      case "login": return viewLogin();
-      case "register": return viewRegister();
-      case "account": return viewAccount();
+      case "login": case "register": case "account":
+        if (!DB.features.members) return membersSoon();
+        return page === "login" ? viewLogin() : page === "register" ? viewRegister() : viewAccount();
       case "track": return viewTrack();
       case "order": return viewMyOrder(arg);
       default: return viewHome();

@@ -12,7 +12,18 @@
 .side nav a.is-on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 .side nav a .badge { font-family: var(--mono); font-size: 11px; background: var(--warn-bg); color: var(--warn); border-radius: 999px; padding: 0 7px; }
 .side nav .sep { font-size: 11px; color: var(--muted); letter-spacing: .06em; padding: 12px 10px 4px; }
-.side-foot { margin-top: auto; padding: 0 10px; font-size: 12px; color: var(--muted); }
+.side-foot { margin-top: auto; padding: 0 10px; font-size: 12px; color: var(--muted); display: grid; gap: 4px; justify-items: start; }
+.side-foot .side-user { color: var(--ink); overflow-wrap: anywhere; }
+.side-foot .btn { padding: 2px 0; }
+
+/* 後台登入 */
+.gate { min-height: calc(100vh - 32px); display: grid; place-items: center; padding: 24px 16px; background: var(--bg); }
+.gate-card { width: 100%; max-width: 420px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 26px; display: grid; gap: 14px; box-shadow: var(--shadow); }
+.gate-card h1 { font-size: 20px; }
+.gate-card p { margin: 0; }
+.gate-form { display: grid; gap: 12px; }
+.gate-steps { margin: 0; padding-left: 20px; display: grid; gap: 10px; }
+.gate-sql { margin: 6px 0; padding: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
 .main { padding: 26px 28px 60px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-content: start; }
 .main > *, .grid-2 > *, .grid-2 > * > * { min-width: 0; }

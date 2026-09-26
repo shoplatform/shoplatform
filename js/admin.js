@@ -39,21 +39,27 @@
             <div class="sep">商品</div>
             ${link("admin/products", "products", "商品")}
             ${link("admin/categories", "categories", "分類")}
-            <div class="sep">進銷存</div>
+            ${DB.features.inventory ? `<div class="sep">進銷存</div>
             ${link("admin/stock", "stock", "庫存")}
             ${link("admin/purchases", "purchases", "進貨單", poOpen || "")}
-            ${link("admin/suppliers", "suppliers", "供應商")}
+            ${link("admin/suppliers", "suppliers", "供應商")}` : ""}
             <div class="sep">行銷</div>
             ${link("admin/coupons", "coupons", "優惠券")}
             ${link("admin/promotions", "promotions", "滿額活動")}
-            ${link("admin/tiers", "tiers", "會員等級")}
+            ${DB.features.tiers ? link("admin/tiers", "tiers", "會員等級") : ""}
             <div class="sep">商店</div>
             ${link("admin/settings", "settings", "設定")}
           </nav>
-          <div class="side-foot">骨架版 v0.6 · 金流未串接</div>
+          <div class="side-foot">
+            <div>${DB.mode === "remote" ? "v0.7 · 資料庫已連線" : "v0.7 · 離線示範版"}</div>
+            ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}</div>` : ""}
+            ${DB.mode === "remote" ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
+          </div>
         </aside>
         <main class="main" id="main">${content}</main>
       </div>`;
+    const out = document.getElementById("side-logout");
+    if (out) out.addEventListener("click", async () => { await DB.admin.logout(); toast("已登出"); Router.go("admin"); });
   }
 
   /* ---------- 總覽 ---------- */
@@ -201,7 +207,8 @@
           </section>
           <section class="panel">
             <div class="panel-head"><h2>商品圖片</h2><span class="small muted" id="pe-img-count"></span></div>
-            <div class="panel-body">
+            ${DB.features.images ? "" : `<div class="panel-body"><div class="notice">商品圖片上傳會在第二階段開放（圖片會存到雲端）。目前前台先用色塊顯示。</div></div>`}
+            <div class="panel-body" ${DB.features.images ? "" : "hidden"}>
               <div class="img-grid" id="pe-imgs"></div>
               <label class="img-drop" id="pe-drop">
                 <input type="file" id="pe-file" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
@@ -219,7 +226,7 @@
             <div class="panel-head"><h2>規格與庫存</h2><button class="btn btn-sm" id="pe-addopt">新增規格類型</button></div>
             <div class="panel-body">
               <p class="small muted" style="margin:0">例如「顏色」填入「白, 黑」、「尺寸」填入「S, M, L」，系統會自動組合出 6 個規格。不需要規格的商品就留空。</p>
-              <p class="small muted" style="margin:0">庫存建議用「進銷存 → 庫存」的盤點調整或進貨單入庫，這裡直接改也會留下異動紀錄。平均成本會在進貨入庫時自動更新。</p>
+              <p class="small muted" style="margin:0">${DB.features.inventory ? "庫存建議用「進銷存 → 庫存」的盤點調整或進貨單入庫，這裡直接改也會留下異動紀錄。平均成本會在進貨入庫時自動更新。" : "直接改庫存會留下異動紀錄；儲存時只會加減你改的數量，這段時間顧客買走的不會被蓋掉。"}</p>
               <div id="pe-opts" style="display:grid;gap:8px"></div>
               <div id="pe-vars"></div>
             </div>
@@ -364,7 +371,7 @@
       v[el.dataset.k] = el.dataset.k === "sku" ? el.value.trim() : Math.max(0, Math.floor(+el.value || 0));
     });
 
-    document.getElementById("pe-save").addEventListener("click", () => {
+    document.getElementById("pe-save").addEventListener("click", async e => {
       if (busy) return toast("圖片還在處理中，請稍等", "error");
       draft.name = document.getElementById("pe-name").value;
       draft.description = document.getElementById("pe-desc").value;
@@ -372,16 +379,18 @@
       draft.categoryIds = [...document.querySelectorAll(".pe-cat:checked")].map(x => x.value);
       draft.options = draft.options.filter(o => o.name && o.values.length);
       draft.variants.forEach((v, i) => { if (!v.sku) v.sku = "SKU-" + Date.now().toString(36).toUpperCase().slice(-5) + "-" + (i + 1); });
+      const btn = e.currentTarget;
       try {
-        const saved = DB.products.save(draft);
+        btn.disabled = true;
+        const saved = await DB.products.save(draft, p);
         toast("已儲存");
         Router.go("admin/product/" + saved.id);
-      } catch (err) { toast(err.message, "error"); }
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
     });
     const del = document.getElementById("pe-del");
     if (del) del.addEventListener("click", async () => {
       if (await confirmBox({ title: `刪除「${p.name}」？`, body: "刪除後無法復原，過去訂單的紀錄不受影響。", ok: "刪除", danger: true })) {
-        DB.products.remove(p.id); toast("已刪除"); Router.go("admin/products");
+        try { await DB.products.remove(p.id); toast("已刪除"); Router.go("admin/products"); } catch (err) { toast(err.message, "error"); }
       }
     });
   }
@@ -406,15 +415,17 @@
             <td class="r"><button class="btn btn-sm btn-ghost cat-del" data-id="${c.id}" data-name="${esc(c.name)}">刪除</button></td>
           </tr>`).join("")}</tbody></table></div>` : `<div class="empty">還沒有分類</div>`}
       </section>`);
-    document.getElementById("cat-form").addEventListener("submit", e => {
+    document.getElementById("cat-form").addEventListener("submit", async e => {
       e.preventDefault();
-      try { DB.categories.add(document.getElementById("cat-name").value); toast("已新增分類"); viewCategories(); }
+      try { await DB.categories.add(document.getElementById("cat-name").value); toast("已新增分類"); viewCategories(); }
       catch (err) { toast(err.message, "error"); }
     });
-    root().querySelectorAll(".cat-rename").forEach(el => el.addEventListener("change", () => { DB.categories.rename(el.dataset.id, el.value); toast("已更新名稱"); }));
+    root().querySelectorAll(".cat-rename").forEach(el => el.addEventListener("change", async () => {
+      try { await DB.categories.rename(el.dataset.id, el.value); toast("已更新名稱"); } catch (err) { toast(err.message, "error"); viewCategories(); }
+    }));
     root().querySelectorAll(".cat-del").forEach(el => el.addEventListener("click", async () => {
       if (await confirmBox({ title: `刪除分類「${el.dataset.name}」？`, body: "商品不會被刪除，只會移出這個分類。", ok: "刪除", danger: true })) {
-        DB.categories.remove(el.dataset.id); toast("已刪除分類"); viewCategories();
+        try { await DB.categories.remove(el.dataset.id); toast("已刪除分類"); viewCategories(); } catch (err) { toast(err.message, "error"); }
       }
     }));
   }
@@ -618,10 +629,12 @@
         if (!await confirmBox({ title: "取消這筆訂單？", body: "商品庫存會自動加回去。", ok: "取消訂單", danger: true })) return;
       }
       if (s === "shipped") return shipPrompt(o);
-      DB.orders.setStatus(o.id, s); toast("訂單已更新為「" + DB.orders.STATUS[s] + "」"); viewOrder(o.id);
+      b.disabled = true;
+      try { await DB.orders.setStatus(o.id, s); toast("訂單已更新為「" + DB.orders.STATUS[s] + "」"); viewOrder(o.id); }
+      catch (err) { toast(err.message, "error"); b.disabled = false; }
     }));
-    document.getElementById("od-note-save").addEventListener("click", () => {
-      DB.orders.setNote(o.id, document.getElementById("od-note").value); toast("已儲存備註");
+    document.getElementById("od-note-save").addEventListener("click", async () => {
+      try { await DB.orders.setNote(o.id, document.getElementById("od-note").value); toast("已儲存備註"); } catch (err) { toast(err.message, "error"); }
     });
   }
 
@@ -636,9 +649,10 @@
     document.body.appendChild(wrap);
     wrap.querySelector("#ship-no").focus();
     wrap.querySelector("#ship-cancel").addEventListener("click", () => wrap.remove());
-    wrap.querySelector("#ship-form").addEventListener("submit", e => {
+    wrap.querySelector("#ship-form").addEventListener("submit", async e => {
       e.preventDefault();
-      DB.orders.setStatus(o.id, "shipped", { trackingNo: wrap.querySelector("#ship-no").value.trim() });
+      try { await DB.orders.setStatus(o.id, "shipped", { trackingNo: wrap.querySelector("#ship-no").value.trim() }); }
+      catch (err) { return toast(err.message, "error"); }
       wrap.remove(); toast("已標記出貨"); viewOrder(o.id);
     });
   }
@@ -826,7 +840,14 @@
           </div>`).join("")}
         </div>
       </section>
-      <section class="panel">
+      ${DB.mode === "remote" ? `<section class="panel">
+        <div class="panel-head"><h2>帳號與資料</h2></div>
+        <div class="panel-body"><dl class="kv">
+          <dt>登入帳號</dt><dd>${esc((DB.admin.user() || {}).email || "")}</dd>
+          <dt>資料存放</dt><dd>Supabase 資料庫（商店代號 <span class="mono">${esc((window.SHOP_CONFIG || {}).storeSlug || "")}</span>）</dd>
+        </dl></div>
+      </section>` : ""}
+      <section class="panel" ${DB.features.reset ? "" : "hidden"}>
         <div class="panel-head"><h2>開發工具</h2></div>
         <div class="panel-body">
           <p class="muted" style="margin:0">目前資料只存在這個瀏覽器裡（儲存空間約已使用 ${Math.round(DB.media.usage().ratio * 100)}%）。重置會把商品、訂單、會員、商品圖片都換回範例資料。</p>
@@ -834,7 +855,7 @@
         </div>
       </section>`);
 
-    document.getElementById("st-save").addEventListener("click", () => {
+    document.getElementById("st-save").addEventListener("click", async () => {
       const cur = DB.settings.get();
       cur.name = document.getElementById("st-name").value.trim() || cur.name;
       cur.tagline = document.getElementById("st-tagline").value.trim();
@@ -847,11 +868,11 @@
       root().querySelectorAll(".pm-on").forEach(el => { cur.paymentMethods[+el.dataset.i].enabled = el.checked; });
       if (!cur.shippingMethods.some(m => m.enabled)) return toast("至少要開一種取貨方式", "error");
       if (!cur.paymentMethods.some(m => m.enabled)) return toast("至少要開一種付款方式", "error");
-      DB.settings.update(cur); toast("已儲存設定"); viewSettings();
+      try { await DB.settings.update(cur); toast("已儲存設定"); viewSettings(); } catch (err) { toast(err.message, "error"); }
     });
     document.getElementById("st-reset").addEventListener("click", async () => {
       if (await confirmBox({ title: "重置範例資料？", body: "你新增或修改的商品、訂單、會員、圖片都會被清掉。", ok: "重置", danger: true })) {
-        DB.reset(); toast("已重置範例資料"); Router.go("admin");
+        try { await DB.reset(); toast("已重置範例資料"); Router.go("admin"); } catch (err) { toast(err.message, "error"); }
       }
     });
   }
@@ -961,14 +982,14 @@
     drawType();
     root().querySelector(".main").addEventListener("input", drawType);
     root().querySelector(".main").addEventListener("change", drawType);
-    document.getElementById("cp-save").addEventListener("click", () => {
-      try { const s = DB.coupons.save(val()); toast("已儲存優惠券"); Router.go("admin/coupon/" + s.id); }
+    document.getElementById("cp-save").addEventListener("click", async () => {
+      try { const s = await DB.coupons.save(val()); toast("已儲存優惠券"); Router.go("admin/coupon/" + s.id); }
       catch (err) { toast(err.message, "error"); }
     });
     const del = document.getElementById("cp-del");
     if (del) del.addEventListener("click", async () => {
       if (await confirmBox({ title: `刪除優惠碼 ${c.code}？`, body: "已經用過的訂單折扣不受影響，但顧客之後就不能再用這個碼。", ok: "刪除", danger: true })) {
-        DB.coupons.remove(c.id); toast("已刪除"); Router.go("admin/coupons");
+        try { await DB.coupons.remove(c.id); toast("已刪除"); Router.go("admin/coupons"); } catch (err) { toast(err.message, "error"); }
       }
     });
   }
@@ -1034,9 +1055,9 @@
       const last = tiers[tiers.length - 1] || { min: 0, off: 0 };
       tiers.push({ min: last.min * 2 || 1000, off: last.off * 2 || 100 }); draw();
     });
-    document.getElementById("pm-save").addEventListener("click", () => {
+    document.getElementById("pm-save").addEventListener("click", async () => {
       try {
-        const s = DB.promotions.save({ id: p.id, name: document.getElementById("pm-name").value, tiers,
+        const s = await DB.promotions.save({ id: p.id, name: document.getElementById("pm-name").value, tiers,
           startAt: document.getElementById("pm-start").value, endAt: document.getElementById("pm-end").value,
           enabled: document.getElementById("pm-on").checked });
         toast("已儲存活動"); Router.go("admin/promotion/" + s.id);
@@ -1045,7 +1066,7 @@
     const del = document.getElementById("pm-del");
     if (del) del.addEventListener("click", async () => {
       if (await confirmBox({ title: `刪除「${p.name}」？`, body: "已成立訂單的折扣不受影響。", ok: "刪除", danger: true })) {
-        DB.promotions.remove(p.id); toast("已刪除"); Router.go("admin/promotions");
+        try { await DB.promotions.remove(p.id); toast("已刪除"); Router.go("admin/promotions"); } catch (err) { toast(err.message, "error"); }
       }
     });
   }
@@ -1490,8 +1511,72 @@
     if (tr) Router.go(tr.dataset.href);
   });
 
+  /* ---------- 後台登入（資料庫版） ---------- */
+  window.AdminGate = function (st) {
+    const wrap = inner => { root().innerHTML = `<div class="gate"><div class="gate-card">${inner}</div></div>`; };
+    if (st.state === "nostore") {
+      const sql = `select setup_add_owner('${st.slug}', '${String(st.email).replace(/'/g, "''")}');`;
+      wrap(`
+        <h1>還差一步：設定店主</h1>
+        <p>你已經用 <b>${esc(st.email)}</b> 登入，但這個帳號還不是這家商店的管理者。</p>
+        <ol class="gate-steps">
+          <li>打開 Supabase 後台，左邊選 <b>SQL Editor</b>，按 <b>New query</b></li>
+          <li>貼上下面這一行，按 <b>Run</b>：<pre class="gate-sql mono" id="gate-sql">${esc(sql)}</pre><button class="btn btn-sm" id="gate-copy" type="button">複製</button></li>
+          <li>看到「完成」後，回到這裡按「重新檢查」</li>
+        </ol>
+        <div class="actions"><button class="btn btn-primary" id="gate-retry">重新檢查</button><button class="btn btn-ghost" id="gate-out">登出，換一個帳號</button></div>`);
+      document.getElementById("gate-copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(sql); toast("已複製"); }
+        catch (e) { const r = document.createRange(); r.selectNodeContents(document.getElementById("gate-sql")); getSelection().removeAllRanges(); getSelection().addRange(r); toast("請按 ⌘C／Ctrl+C 複製"); }
+      });
+      document.getElementById("gate-retry").addEventListener("click", () => Router.render());
+      document.getElementById("gate-out").addEventListener("click", async () => { await DB.admin.logout(); Router.render(); });
+      return;
+    }
+    // 登入／建立帳號
+    let mode = "login";
+    const draw = msg => {
+      wrap(`
+        <h1>商家後台</h1>
+        <p class="muted">${mode === "login" ? "用你的 Email 登入" : "第一次使用：建立管理者帳號"}</p>
+        ${msg ? `<div class="notice">${msg}</div>` : ""}
+        <form id="gate-form" class="gate-form" novalidate>
+          <div class="field"><label for="gate-email">Email</label><input type="email" id="gate-email" autocomplete="username" required></div>
+          <div class="field"><label for="gate-pw">密碼</label><input type="password" id="gate-pw" autocomplete="${mode === "login" ? "current-password" : "new-password"}" required>${mode === "login" ? "" : `<span class="hint">至少 8 個字元</span>`}</div>
+          <button class="btn btn-primary" type="submit" style="padding:10px">${mode === "login" ? "登入" : "建立帳號"}</button>
+        </form>
+        <button class="btn btn-ghost" id="gate-switch" type="button">${mode === "login" ? "第一次使用？建立帳號" : "已經有帳號？登入"}</button>`);
+      document.getElementById("gate-email").focus();
+      document.getElementById("gate-switch").addEventListener("click", () => { mode = mode === "login" ? "signup" : "login"; draw(); });
+      document.getElementById("gate-form").addEventListener("submit", async e => {
+        e.preventDefault();
+        const email = document.getElementById("gate-email").value.trim(), pw = document.getElementById("gate-pw").value;
+        const btn = e.target.querySelector("button[type=submit]");
+        if (!email || !pw) return toast("請填寫 Email 和密碼", "error");
+        if (mode === "signup" && pw.length < 8) return toast("密碼至少 8 個字元", "error");
+        btn.disabled = true;
+        try {
+          if (mode === "login") { await DB.admin.login(email, pw); Router.render(); }
+          else {
+            const r = await DB.admin.signup(email, pw);
+            if (r.needConfirm) { mode = "login"; draw(`已寄出確認信到 <b>${esc(email)}</b>。請到信箱點信裡的連結，完成後回來這裡登入。`); }
+            else Router.render();
+          }
+        } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+      });
+    };
+    draw();
+  };
+
+  function phaseTwo(active, title) {
+    shell(active, `<div class="page-head"><h1>${esc(title)}</h1></div>
+      <div class="panel"><div class="empty">這個功能會在第二階段搬到資料庫後開放。<div style="margin-top:12px"><a class="btn" href="#admin">回總覽</a></div></div></div>`);
+  }
+
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
+    if (!DB.features.inventory && ["stock", "moves", "purchases", "purchase", "suppliers", "supplier"].includes(page)) return phaseTwo("", "進銷存");
+    if (!DB.features.tiers && page === "tiers") return phaseTwo("", "會員等級");
     switch (page) {
       case undefined: return viewDashboard();
       case "products": return viewProducts();
