@@ -161,5 +161,93 @@ ${range.map(i => `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats
       { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   }
 
-  window.XLSX = { build: sheets => zip(workbookFiles(sheets)) };
+  /* ---------- 讀 Excel（.xlsx）：只讀第一張工作表，回傳一列一列的陣列 ----------
+   * .xlsx 是 zip：用瀏覽器內建的 DecompressionStream 解壓縮，再讀裡面的 XML。 */
+  async function inflate(bytes) {
+    const ds = new DecompressionStream("deflate-raw");
+    const out = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+    return new Uint8Array(out);
+  }
+  async function unzip(buf) {
+    const u8 = new Uint8Array(buf), dv = new DataView(buf);
+    let eocd = -1;
+    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+    if (eocd < 0) throw new Error("這不是 Excel 檔（.xlsx），請另存成 .xlsx 或 .csv 再試");
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const files = {}, dec = new TextDecoder();
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+      const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+      const local = dv.getUint32(p + 42, true);
+      const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      files[name] = { method, data: u8.subarray(start, start + csize) };
+      p += 46 + nlen + xlen + clen;
+    }
+    return async name => {
+      const f = files[name]; if (!f) return null;
+      const bytes = f.method === 0 ? f.data : f.method === 8 ? await inflate(f.data) : null;
+      if (!bytes) throw new Error("Excel 檔的壓縮格式不支援，請另存成 .csv 再試");
+      return new TextDecoder().decode(bytes);
+    };
+  }
+  const xml = t => new DOMParser().parseFromString(t, "application/xml");
+  const colIdx = ref => { let n = 0; for (const ch of ref.replace(/\d+$/, "")) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+  async function readXlsx(buf) {
+    if (!window.DecompressionStream) throw new Error("這個瀏覽器太舊，無法讀 Excel，請改用 .csv 或換新版 Chrome／Safari");
+    const get = await unzip(buf);
+    const wb = xml(await get("xl/workbook.xml") || "");
+    const first = wb.getElementsByTagName("sheet")[0];
+    if (!first) throw new Error("Excel 檔裡沒有工作表");
+    const rid = first.getAttribute("r:id") || first.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+    const rels = xml(await get("xl/_rels/workbook.xml.rels") || "<x/>");
+    let target = "worksheets/sheet1.xml";
+    [...rels.getElementsByTagName("Relationship")].forEach(r => { if (r.getAttribute("Id") === rid) target = r.getAttribute("Target"); });
+    target = target.replace(/^\/?xl\//, "").replace(/^\//, "");
+    const shared = [];
+    const sst = await get("xl/sharedStrings.xml");
+    if (sst) [...xml(sst).getElementsByTagName("si")].forEach(si => shared.push([...si.getElementsByTagName("t")].map(t => t.textContent).join("")));
+    const sheet = xml(await get("xl/" + target) || "");
+    const rows = [];
+    [...sheet.getElementsByTagName("row")].forEach(row => {
+      const r = (+row.getAttribute("r") || rows.length + 1) - 1;
+      const cells = [];
+      [...row.getElementsByTagName("c")].forEach(c => {
+        const t = c.getAttribute("t"), v = c.getElementsByTagName("v")[0];
+        let val = "";
+        if (t === "s") val = shared[+(v && v.textContent)] || "";
+        else if (t === "inlineStr") val = [...c.getElementsByTagName("t")].map(x => x.textContent).join("");
+        else if (t === "b") val = v && v.textContent === "1" ? "TRUE" : "FALSE";
+        else val = v ? v.textContent : "";
+        cells[colIdx(c.getAttribute("r") || "A")] = val;
+      });
+      rows[r] = Array.from(cells, x => x === undefined ? "" : String(x));
+    });
+    return Array.from(rows, x => x || []);
+  }
+  // CSV（Excel「另存新檔 → CSV UTF-8」）
+  function readCsv(text) {
+    text = text.replace(/^﻿/, "");
+    const rows = []; let row = [], cur = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ",") { row.push(cur); cur = ""; }
+      else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cur); rows.push(row); row = []; cur = ""; }
+      else cur += ch;
+    }
+    if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+  async function read(file) {
+    const name = (file.name || "").toLowerCase();
+    if (name.endsWith(".csv")) return readCsv(await file.text());
+    if (name.endsWith(".xls")) throw new Error("舊版 Excel（.xls）不支援，請另存成 .xlsx 再匯入");
+    return readXlsx(await file.arrayBuffer());
+  }
+
+  window.XLSX = { build: sheets => zip(workbookFiles(sheets)), read, readCsv };
 })();

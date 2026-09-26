@@ -183,7 +183,7 @@
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.12 · 平台管理者</div>
+            <div>v0.16 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>

@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.12）
+ * db.js — 資料層（Supabase 資料庫版，v0.16）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -43,7 +43,7 @@
   const storeUrl = slug => linkUrl({}, slug);
 
   // memberAuth：前台會員用 Email 帳號（離線示範版用手機）
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email", platform: true };
+  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email", platform: true, staff: true };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const listeners = [];
@@ -166,6 +166,15 @@
     isPlatform: () => isPlatform,
     storeUrl,
     billing: () => (cache.admin && cache.admin.billing) || null,
+    // 自己在這家店的身分：owner 店主／staff 員工（perms 是勾選的權限）
+    me: () => (cache.admin && cache.admin.me) || { role: "owner", perms: [] },
+    can(p) {
+      const me = admin.me();
+      if (me.role === "owner") return true;
+      if (p === "owner") return false;
+      if (p === "cost") return me.perms.includes("inventory") || me.perms.includes("reports");
+      return me.perms.includes(p);
+    },
     platformInfo: () => (cache.admin && cache.admin.platform) || {},
     async login(email, password) {
       const r = await sbAdmin.auth.signInWithPassword({ email: String(email || "").trim(), password });
@@ -193,6 +202,18 @@
       adminStore = st; cache.admin = null; SLUG = slug; remember(slug);
       history.replaceState(null, "", storeUrl(slug) + location.hash);
     },
+    async acceptInvite(token) {
+      const r = await rpc("admin_accept_invite", { p_token: token });
+      myStores = await rpc("admin_my_stores");
+      admin.useStore(r.slug);
+      return r;
+    },
+    async leave() {
+      await rpc("admin_leave_store", { p_store: adminStore.id });
+      myStores = await rpc("admin_my_stores"); adminStore = null; cache.admin = null; SLUG = "";
+      history.replaceState(null, "", baseUrl() + "#admin");
+    },
+    inviteInfo: token => call(sbAdmin, "admin_invite_info", { p_token: token }),
     async checkSlug(slug) { return rpc("admin_slug_available", { p_slug: slug }); },
     async createStore(name, slug) {
       const r = await rpc("admin_create_store", { p_name: name, p_slug: slug });
@@ -363,13 +384,26 @@
 
   /* ---------- 商品 ---------- */
   const products = {
-    list({ q = "", categoryId = "", status = "" } = {}) {
+    // live：只要前台看得到的（上架中、在排程時間內）
+    list({ q = "", categoryId = "", status = "", live = false } = {}) {
       q = q.trim().toLowerCase();
       return clone(C().products.filter(p =>
         (!q || p.name.toLowerCase().includes(q) || p.variants.some(v => v.sku.toLowerCase().includes(q))) &&
         (!categoryId || p.categoryIds.includes(categoryId)) &&
-        (!status || p.status === status)
-      ).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        (!status || p.status === status) && (!live || products.isLive(p))
+      ).sort((a, b) => (a.sort || 0) - (b.sort || 0) || b.createdAt.localeCompare(a.createdAt)));
+    },
+    // 排程：上架中，而且現在在「上架時間～自動下架時間」之間
+    isLive(p) {
+      if (!p || p.status !== "active") return false;
+      const now = Date.now();
+      return (!p.publishAt || new Date(p.publishAt).getTime() <= now) && (!p.unpublishAt || new Date(p.unpublishAt).getTime() > now);
+    },
+    schedule(p) {   // 後台顯示用：live／scheduled（還沒到上架時間）／ended（已自動下架）／draft
+      if (p.status !== "active") return "draft";
+      if (p.publishAt && new Date(p.publishAt).getTime() > Date.now()) return "scheduled";
+      if (p.unpublishAt && new Date(p.unpublishAt).getTime() <= Date.now()) return "ended";
+      return "live";
     },
     get: id => { const p = C().products.find(x => x.id === id); return p ? clone(p) : null; },
     /* original：打開編輯頁時的商品。庫存用「變動量」送出，不會蓋掉這段時間賣掉的數量 */
@@ -384,6 +418,7 @@
       ((original && original.variants) || []).forEach(v => { was[v.id] = v.stock; });
       const payload = {
         id: input.id || null, name: input.name.trim(), description: input.description || "", status: input.status,
+        publishAt: input.publishAt || null, unpublishAt: input.unpublishAt || null,
         color: input.color || "", categoryIds: input.categoryIds || [], options: input.options || [],
         images: (input.images || []).map(im => ({ id: im.id, url: im.url, path: im.path, width: im.width, height: im.height })),
         variants: input.variants.map(v => ({
@@ -398,6 +433,15 @@
       await media.removeFiles(((original && original.images) || []).map(im => im.path).filter(pth => pth && !keep.has(pth)));
       await afterWrite();
       return products.get(id);
+    },
+    async sortOrder(ids) { await rpc("admin_sort_products", { p_store: adminStore.id, p_ids: ids }); await afterWrite(); },
+    async duplicate(id) { const nid = await rpc("admin_duplicate_product", { p_store: adminStore.id, p_id: id }); await afterWrite(); return nid; },
+    // 匯入：一次存很多個（全部成功才生效）
+    async saveMany(list) {
+      const payload = list.map(p => Object.assign({}, p, { variants: p.variants.map(v => ({ id: v.id, sku: v.sku, options: v.options, price: v.price, cost: v.cost, stockDelta: v.stockDelta || 0 })) }));
+      const ids = await rpc("admin_save_products_bulk", { p_store: adminStore.id, p_products: payload });
+      await afterWrite();
+      return ids;
     },
     async remove(id) {
       const p = C().products.find(x => x.id === id);
@@ -550,7 +594,7 @@
   };
 
   /* ---------- 進銷存：讀取從後台快取算，寫入呼叫資料庫 ---------- */
-  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存" };
+  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存", return: "退貨入庫" };
   function incomingOf(variantId) {
     return C().purchases.filter(po => po.status === "ordered" || po.status === "partial")
       .reduce((s, po) => s + po.items.filter(it => it.variantId === variantId).reduce((a, it) => a + (it.qty - it.received), 0), 0);
@@ -726,6 +770,18 @@
       if (o) extraOrders[o.id] = o;
       return o ? clone(o) : null;
     },
+    // 批次改狀態：回傳 { ok: 成功筆數, failed: [{ number, reason }] }
+    async bulkStatus(ids, status, tracking) {
+      const r = await rpc("admin_bulk_set_status", { p_store: adminStore.id, p_orders: ids, p_status: status, p_tracking: tracking || {} });
+      await afterWrite(); extraOrders = {};
+      return r;
+    },
+    // 退貨／退款：items = [{ variantId, qty }]
+    async refund(orderId, { items, amount, restock, reason }) {
+      const r = await rpc("admin_refund_order", { p_store: adminStore.id, p_order: orderId, p_items: items || [], p_amount: Math.round(+amount || 0), p_restock: !!restock, p_reason: reason || "" });
+      await afterWrite(); delete extraOrders[orderId];
+      return r;
+    },
     async ofCustomer(id) { return clone(await rpc("admin_customer_orders", { p_store: adminStore.id, p_customer: id })); },
     window: () => ({ loaded: C().orders.length, total: C().orderTotal != null ? C().orderTotal : C().orders.length, days: 120 }),
 
@@ -829,6 +885,38 @@
     };
   }
 
+  /* ---------- 商品評價 ---------- */
+  const reviews = {
+    settings: () => Object.assign({ enabled: true, autoPublish: true }, (C().settings || {}).reviews || {}),
+    summary: p => ({ avg: p && p.ratingAvg != null ? +p.ratingAvg : null, count: (p && p.ratingCount) || 0 }),
+    forProduct: (productId, offset) => rpc("shop_reviews", { p_slug: shopSlug(), p_product: productId, p_offset: offset || 0 }),
+    mine: async () => (cache.member ? rpc("shop_my_reviewables", { p_slug: shopSlug() }) : []),
+    async save({ orderNumber, productId, rating, content }) {
+      const r = await rpc("shop_review_save", { p_slug: shopSlug(), p_order: orderNumber, p_product: productId, p_rating: +rating || 0, p_content: content || "" });
+      cache.shop = null;   // 重新載入平均星等
+      return r;
+    },
+    // 後台
+    pending: () => (cache.admin && cache.admin.reviewPending) || 0,
+    list: ({ status = "", rating = null } = {}, { offset = 0, limit = 50 } = {}) =>
+      rpc("admin_reviews", { p_store: adminStore.id, p_status: status, p_rating: rating ? +rating : null, p_offset: offset, p_limit: limit }),
+    async setStatus(id, st) { await rpc("admin_review_set", { p_store: adminStore.id, p_id: id, p_status: st }); await afterWrite(); },
+    async reply(id, text) { await rpc("admin_review_reply", { p_store: adminStore.id, p_id: id, p_reply: text || "" }); },
+  };
+
+  /* ---------- 員工（只有店主能管理） ---------- */
+  const staff = {
+    list: () => rpc("admin_staff_list", { p_store: adminStore.id }),
+    async invite(email, perms) {
+      const r = await rpc("admin_invite_staff", { p_store: adminStore.id, p_email: email, p_perms: perms });
+      return Object.assign(r, { link: staff.link(r.token) });
+    },
+    link: token => baseUrl() + "#admin/join/" + token,
+    cancelInvite: id => rpc("admin_cancel_invite", { p_store: adminStore.id, p_id: id }),
+    update: (userId, perms) => rpc("admin_update_staff", { p_store: adminStore.id, p_user: userId, p_perms: perms }),
+    remove: userId => rpc("admin_remove_staff", { p_store: adminStore.id, p_user: userId }),
+  };
+
   /* ---------- 報表：由資料庫計算（全部訂單） ---------- */
   const reports = { get: (from, to) => rpc("admin_report", { p_store: adminStore.id, p_from: from, p_to: to }) };
 
@@ -836,7 +924,7 @@
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases, reports,
+    inventory, suppliers, purchases, reports, staff, reviews,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

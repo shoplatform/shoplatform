@@ -116,6 +116,72 @@
     });
   }
 
+  /* ---------- 商品評價 ---------- */
+  const stars = (n, big) => `<span class="stars${big ? " is-big" : ""}" role="img" aria-label="${n} 顆星（滿分 5 顆）">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= Math.round(n) ? "on" : ""}" aria-hidden="true">★</i>`).join("")}</span>`;
+  const reviewsOn = () => DB.reviews && DB.reviews.settings().enabled;
+  const ratingLine = p => {
+    if (!reviewsOn()) return "";
+    const r = DB.reviews.summary(p);
+    return r.count ? `<span class="s-rating">${stars(r.avg)} <span>${r.avg.toFixed(1)}（${r.count}）</span></span>` : "";
+  };
+  // 寫／改評價的視窗
+  function reviewForm(item, after) {
+    const cur = item.review || {};
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop shop-modal";
+    wrap.innerHTML = `<form class="modal s-review-form" novalidate>
+      <h3>${cur.id ? "修改評價" : "寫評價"}：${esc(item.name)}</h3>
+      <fieldset class="star-pick"><legend class="small">給幾顆星？</legend>
+        ${[5, 4, 3, 2, 1].map(n => `<input type="radio" name="rv-star" id="rv-s${n}" value="${n}" ${cur.rating === n ? "checked" : ""}><label for="rv-s${n}" title="${n} 顆星"><span class="sr">${n} 顆星</span>★</label>`).join("")}
+      </fieldset>
+      <div class="field"><label for="rv-text">心得（選填）</label><textarea id="rv-text" rows="4" maxlength="500" placeholder="用起來怎麼樣？給其他人一點參考">${esc(cur.content || "")}</textarea><span class="hint">會以「${esc((DB.auth.current() || {}).name ? DB.auth.current().name.slice(0, 1) + "**" : "顧客")}」的名字公開</span></div>
+      <div class="modal-actions"><button type="button" class="btn" id="rv-cancel">取消</button><button class="btn btn-primary" type="submit">送出評價</button></div>
+    </form>`;
+    document.body.appendChild(wrap);
+    const shopEl = document.querySelector(".shop");
+    if (shopEl) { wrap.className += " " + shopEl.className.replace(/\bshop\b/, ""); wrap.setAttribute("style", shopEl.getAttribute("style") || ""); }
+    wrap.querySelector("#rv-cancel").addEventListener("click", () => wrap.remove());
+    wrap.querySelector("form").addEventListener("submit", async e => {
+      e.preventDefault();
+      const star = wrap.querySelector('input[name="rv-star"]:checked');
+      if (!star) return toast("請選幾顆星", "error");
+      const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
+      try {
+        const r = await DB.reviews.save({ orderNumber: item.orderNumber, productId: item.productId, rating: +star.value, content: wrap.querySelector("#rv-text").value });
+        wrap.remove(); toast(r.status === "pending" ? "謝謝！評價會在店家確認後公開" : r.status === "hidden" ? "已更新評價" : "謝謝你的評價！"); after();
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
+  }
+  // 商品頁下方的評價區
+  async function drawReviews(p, box) {
+    if (!reviewsOn() || !box) return;
+    let data, mine = [];
+    try { [data, mine] = await Promise.all([DB.reviews.forProduct(p.id, 0), DB.reviews.mine().catch(() => [])]); } catch (err) { return; }
+    if (!document.body.contains(box)) return;
+    const mineHere = mine.filter(x => x.productId === p.id);
+    const todo = mineHere.find(x => !x.review) || mineHere[0];
+    const items = data.items.slice();
+    const card = r => `<li class="s-rv"><div class="s-rv-head">${stars(r.rating)}<b>${esc(r.name)}</b><span class="small">${esc(date(r.createdAt))}</span><span class="s-rv-badge">已購買</span></div>
+      ${r.content ? `<p>${esc(r.content)}</p>` : ""}
+      ${r.reply ? `<div class="s-rv-reply"><b>店家回覆</b><p>${esc(r.reply)}</p></div>` : ""}</li>`;
+    const render = () => {
+      box.innerHTML = `<div class="s-rv-top">
+        <div><h2>商品評價</h2>${data.count ? `<div class="s-rv-avg"><b>${(+data.avg).toFixed(1)}</b>${stars(+data.avg, true)}<span>${data.count} 則評價</span></div>` : `<p class="small" style="margin:0">還沒有評價</p>`}</div>
+        ${data.count ? `<ul class="s-rv-dist" aria-label="各星等數量">${[5, 4, 3, 2, 1].map(g => `<li><span>${g} 星</span><i><b style="width:${data.count ? data.dist[g] / data.count * 100 : 0}%"></b></i><span>${data.dist[g]}</span></li>`).join("")}</ul>` : ""}
+        <div class="s-rv-act">${todo ? `<button class="btn btn-primary" type="button" id="rv-write">${todo.review ? "修改我的評價" : "寫評價"}</button>`
+          : `<span class="small">${DB.auth.current() ? "買過並出貨後就可以評價" : `買過的會員<a href="#shop/login">登入</a>後可以評價`}</span>`}</div>
+      </div>
+      ${todo && todo.review && todo.review.status === "pending" ? `<div class="s-gap">你的評價正在等店家確認，確認後才會公開</div>` : ""}
+      ${items.length ? `<ul class="s-rv-list">${items.map(card).join("")}</ul>` : ""}
+      ${items.length < data.count ? `<div style="text-align:center"><button class="btn" type="button" id="rv-more">看更多評價</button></div>` : ""}`;
+      const w = document.getElementById("rv-write");
+      if (w) w.addEventListener("click", () => reviewForm(todo, () => { DB.ready("shop").then(() => viewProduct(p.id)); }));
+      const m = document.getElementById("rv-more");
+      if (m) m.addEventListener("click", async () => { m.disabled = true; const more = await DB.reviews.forProduct(p.id, items.length); items.push(...more.items); render(); });
+    };
+    render();
+  }
+
   // 佈景主題：配色、版型、字體（theme.js）
   const themeAttr = st => { if (!window.Theme) return { cls: "", style: "" }; window.Theme.useFont(st.theme); return window.Theme.attrs(st.theme); };
   const logoLink = st => {
@@ -146,8 +212,8 @@
   /* ---------- 首頁 / 分類 ---------- */
   function viewHome(categoryId) {
     const st = DB.settings.get();
-    const cats = DB.categories.list().filter(c => DB.products.list({ categoryId: c.id, status: "active" }).length);
-    const list = DB.products.list({ q: query, categoryId: categoryId || "", status: "active" });
+    const cats = DB.categories.list().filter(c => DB.products.list({ categoryId: c.id, live: true }).length);
+    const list = DB.products.list({ q: query, categoryId: categoryId || "", live: true });
     const cur = cats.find(c => c.id === categoryId);
     const th = window.Theme ? window.Theme.normalize(st.theme) : { layout: "grid" };
     const front = !cur && !query;   // 首頁（不是分類頁、搜尋結果）才套用版型
@@ -181,6 +247,7 @@
             <div style="position:relative">${out ? `<span class="s-soldout">售完</span>` : ""}${img(p)}</div>
             <span class="s-name">${esc(p.name)}</span>
             <span class="s-price">${priceText(p)}</span>
+            ${ratingLine(p)}
           </a>`;
         }).join("")}</div>` : `<div class="empty">找不到符合的商品</div>`}
       </div>`);
@@ -192,7 +259,7 @@
   /* ---------- 商品頁 ---------- */
   function viewProduct(id) {
     const p = DB.products.get(id);
-    if (!p || p.status !== "active") {
+    if (!p || !DB.products.isLive(p)) {
       return shell(`<div class="s-wrap"><div class="empty">這個商品不存在或已下架<div style="margin-top:12px"><a class="btn" href="#shop">回到商店</a></div></div></div>`);
     }
     // 預設選第一個有庫存的規格
@@ -224,9 +291,14 @@
               <button class="btn" id="sp-buy">直接購買</button>
               <span class="s-stock" id="sp-stock"></span>
             </div>
+            ${ratingLine(p) ? `<a href="#sp-reviews" class="s-rating-link" id="sp-to-rv">${ratingLine(p)}</a>` : ""}
           </div>
         </div>
+        <section class="s-box s-reviews" id="sp-reviews" ${reviewsOn() ? "" : "hidden"}></section>
       </div>`);
+    drawReviews(p, document.getElementById("sp-reviews"));
+    const toRv = document.getElementById("sp-to-rv");
+    if (toRv) toRv.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); document.getElementById("sp-reviews").scrollIntoView({ behavior: "smooth" }); });
 
     root().querySelectorAll(".s-thumbs [data-img]").forEach(b => b.addEventListener("click", () => {
       document.getElementById("sp-main").innerHTML = img(p, "", images[+b.dataset.img].url);
@@ -885,9 +957,22 @@
               </dl>
               ${o.status === "pending_payment" ? `<button class="btn" type="button" id="mo-cancel">取消訂單</button>` : ""}
             </section>
+            <section class="s-box" id="mo-reviews" hidden></section>
           </div>
         </div>
       </div>`);
+    // 已出貨的會員訂單：可以評價買過的商品
+    if (user && reviewsOn() && ["shipped", "completed"].includes(o.status)) {
+      DB.reviews.mine().then(list => {
+        const mineHere = list.filter(x => x.orderNumber === o.number), box = document.getElementById("mo-reviews");
+        if (!box || !mineHere.length) return;
+        box.hidden = false;
+        box.innerHTML = `<h2>評價這次買的商品</h2>${mineHere.map((x, i) => `<div class="s-rv-row"><span>${esc(x.name)}</span>
+          ${x.review ? `<span class="small">${stars(x.review.rating)}${x.review.status === "pending" ? "（等店家確認）" : ""}</span><button class="btn btn-sm" type="button" data-rv="${i}">修改</button>`
+            : `<button class="btn btn-sm btn-primary" type="button" data-rv="${i}">寫評價</button>`}</div>`).join("")}`;
+        box.querySelectorAll("[data-rv]").forEach(b => b.addEventListener("click", () => reviewForm(mineHere[+b.dataset.rv], () => viewMyOrder(o.number))));
+      }).catch(() => {});
+    }
     const c = document.getElementById("mo-cancel");
     if (c) c.addEventListener("click", async () => {
       if (!await UI.confirmBox({ title: "取消這筆訂單？", body: "取消後無法復原，要買的話需要重新下單。", ok: "取消訂單", danger: true })) return;

@@ -28,7 +28,11 @@
       document.title = side === "shop" ? `${DB.settings.get().name || "商店"}` : side === "admin" ? `商家後台｜${DB.settings.get().name || platformName}`
         : side === "platform" ? `平台總控台｜${platformName}` : platformName;
       const note = DB.takeNotice && DB.takeNotice();
-      if ((side === "admin" || side === "platform") && st.state !== "ok") { window.AdminGate(Object.assign({ side }, st), parts); }
+      // 員工邀請連結 #admin/join/<token>；註冊完回來時也接著處理還沒完成的邀請
+      const pending = side === "admin" && window.AdminPendingInvite ? window.AdminPendingInvite.get() : "";
+      if (side === "admin" && parts[1] === "join" && parts[2]) { await window.AdminJoin(parts[2], st); }
+      else if (pending && st.state !== "login") { Router.go("admin/join/" + pending); }
+      else if ((side === "admin" || side === "platform") && st.state !== "ok") { window.AdminGate(Object.assign({ side }, st), parts); }
       else {
         const App = { shop: window.ShopApp, admin: window.AdminApp, platform: window.PlatformApp, home: window.HomeApp }[side];
         await App(parts); window.scrollTo(0, 0);

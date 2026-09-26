@@ -19,6 +19,43 @@
       : `<div class="thumb" style="background:${esc(p.color)}">${esc(p.name.slice(0, 1))}</div>`;
   };
 
+  /* ---------- 權限：每一頁需要哪個權限（店主全部都有） ---------- */
+  const PERMS = [
+    ["orders", "訂單", "查看訂單、確認收款、出貨、取消"],
+    ["customers", "會員", "查看會員資料與消費紀錄"],
+    ["products", "商品", "新增、編輯商品與分類"],
+    ["inventory", "進銷存", "庫存、進貨單、供應商（會看到成本）"],
+    ["marketing", "行銷", "優惠券、滿額活動、會員等級"],
+    ["reports", "報表", "營收與毛利報表（會看到成本）"],
+    ["settings", "設定", "商店設定與外觀"],
+  ];
+  const PAGE_PERM = { orders: "orders", order: "orders", customers: "customers", customer: "customers", reports: "reports",
+    products: "products", product: "products", categories: "products", reviews: "products",
+    stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory",
+    coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", tiers: "marketing",
+    theme: "settings", settings: "settings", staff: "owner" };
+  const can = p => DB.admin.can(p);
+  const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
+  function navHtml(link, c, poOpen) {
+    const groups = [
+      ["", [["admin", "dash", "總覽", "", true]]],
+      ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
+      ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
+      ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
+      ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
+      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")]]],
+    ];
+    return groups.map(([title, items]) => {
+      const shown = items.filter(x => x[4]);
+      return shown.length ? (title ? `<div class="sep">${title}</div>` : "") + shown.map(x => link(x[0], x[1], x[2], x[3])).join("") : "";
+    }).join("");
+  }
+  function noPerm(perm) {
+    shell("", `<div class="page-head"><h1>沒有權限</h1></div>
+      <div class="panel"><div class="empty">${perm === "owner" ? "這一頁只有店主可以使用。" : `你沒有「${esc(permName(perm))}」的權限，請找店主開通。`}
+      <div style="margin-top:12px"><a class="btn" href="#admin">回總覽</a></div></div></div>`);
+  }
+
   /* ---------- 版面外框 ---------- */
   function shell(active, content) {
     const st = DB.settings.get();
@@ -32,33 +69,13 @@
       <div class="admin">
         <aside class="side">
           <div class="side-brand"><strong>${esc(st.name)}</strong><span>商家後台</span></div>
-          <nav aria-label="後台選單">
-            ${link("admin", "dash", "總覽")}
-            <div class="sep">銷售</div>
-            ${link("admin/orders", "orders", "訂單", c.paid || "")}
-            ${link("admin/customers", "customers", "會員")}
-            ${link("admin/reports", "reports", "報表")}
-            <div class="sep">商品</div>
-            ${link("admin/products", "products", "商品")}
-            ${link("admin/categories", "categories", "分類")}
-            ${DB.features.inventory ? `<div class="sep">進銷存</div>
-            ${link("admin/stock", "stock", "庫存")}
-            ${link("admin/purchases", "purchases", "進貨單", poOpen || "")}
-            ${link("admin/suppliers", "suppliers", "供應商")}` : ""}
-            <div class="sep">行銷</div>
-            ${link("admin/coupons", "coupons", "優惠券")}
-            ${link("admin/promotions", "promotions", "滿額活動")}
-            ${DB.features.tiers ? link("admin/tiers", "tiers", "會員等級") : ""}
-            <div class="sep">商店</div>
-            ${link("admin/theme", "theme", "外觀")}
-            ${link("admin/settings", "settings", "設定")}
-          </nav>
+          <nav aria-label="後台選單">${navHtml(link, c, poOpen)}</nav>
           <div class="side-foot">
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.12 · 資料庫已連線" : "v0.12 · 離線示範版"}</div>
-            ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}</div>` : ""}
+            <div>${remote ? "v0.16 · 資料庫已連線" : "v0.16 · 離線示範版"}</div>
+            ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
         </aside>
@@ -69,6 +86,174 @@
   }
 
 
+
+
+  /* ---------- 員工（只有店主） ---------- */
+  const permBoxes = (prefix, on) => `<div class="perm-grid">${PERMS.map(([k, name, desc]) => `<label class="check perm-item"><input type="checkbox" class="${prefix}" value="${k}" ${on.includes(k) ? "checked" : ""}><span><b>${name}</b><span class="small muted">${desc}</span></span></label>`).join("")}</div>`;
+  const picked = sel => [...document.querySelectorAll(sel + ":checked")].map(x => x.value);
+  const permPills = perms => perms.map(p => `<span class="pill idle">${esc(permName(p))}</span>`).join(" ");
+  async function viewStaff(justLink) {
+    shell("staff", `<div class="page-head"><h1>員工</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);
+    let L;
+    try { L = await DB.staff.list(); } catch (err) { document.getElementById("main").innerHTML = `<div class="panel"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    const main = document.getElementById("main");
+    if (!main) return;
+    main.innerHTML = `
+      <div class="page-head"><h1>員工</h1></div>
+      ${justLink ? `<div class="panel is-hl"><div class="panel-body">
+        <b>邀請連結已建立</b>
+        <div class="url-box"><span class="mono small" style="overflow-wrap:anywhere">${esc(justLink)}</span><button class="btn btn-sm" type="button" data-copy="${esc(justLink)}">複製連結</button></div>
+        <p class="small muted" style="margin:0">把連結用 LINE 或 Email 傳給對方。對方打開連結、用<b>被邀請的 Email</b> 登入或註冊，就會加入這家店。連結 7 天內有效、只能用一次。</p>
+      </div></div>` : ""}
+      <section class="panel">
+        <div class="panel-head"><h2>成員</h2><span class="small muted">${L.members.length} 人</span></div>
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th>Email</th><th>身分</th><th>權限</th><th>加入日期</th><th></th></tr></thead>
+          <tbody>${L.members.map(m => `<tr>
+            <td>${esc(m.email)}${m.isMe ? ` <span class="small muted">（你）</span>` : ""}</td>
+            <td>${m.role === "owner" ? `<span class="pill info">店主</span>` : `<span class="pill ok">員工</span>`}</td>
+            <td style="white-space:normal">${m.role === "owner" ? `<span class="small muted">全部</span>` : permPills(m.perms)}</td>
+            <td class="small">${date(m.createdAt)}</td>
+            <td class="r">${m.role === "owner" ? "" : `<button class="btn btn-sm" type="button" data-edit="${m.userId}">改權限</button> <button class="btn btn-sm btn-ghost" type="button" data-remove="${m.userId}" data-email="${esc(m.email)}">移除</button>`}</td>
+          </tr>
+          ${m.role === "owner" ? "" : `<tr class="perm-edit" id="pe-${m.userId}" hidden><td colspan="5">${permBoxes("pe-" + m.userId, m.perms)}
+            <div class="actions" style="margin-top:8px"><button class="btn btn-sm btn-primary" type="button" data-save="${m.userId}">儲存權限</button></div></td></tr>`}`).join("")}</tbody>
+        </table></div>
+      </section>
+      ${L.invites.length ? `<section class="panel">
+        <div class="panel-head"><h2>邀請中</h2></div>
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th>Email</th><th>權限</th><th>期限</th><th></th></tr></thead>
+          <tbody>${L.invites.map(v => `<tr>
+            <td>${esc(v.email)}</td><td style="white-space:normal">${permPills(v.perms)}</td>
+            <td class="small">${v.expired ? `<span class="pill bad">已過期</span>` : date(v.expiresAt)}</td>
+            <td class="r">${v.expired ? "" : `<button class="btn btn-sm" type="button" data-copy="${esc(DB.staff.link(v.token))}">複製連結</button>`} <button class="btn btn-sm btn-ghost" type="button" data-cancel="${v.id}">取消</button></td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+      </section>` : ""}
+      <section class="panel">
+        <div class="panel-head"><h2>邀請員工</h2></div>
+        <form class="panel-body" id="inv-form" novalidate>
+          <div class="field"><label for="inv-email">員工的 Email</label><input type="email" id="inv-email" placeholder="例如 helper@example.com" autocomplete="off"><span class="hint">對方要用這個 Email 登入或註冊</span></div>
+          <div class="field"><label>可以做哪些事</label>${permBoxes("inv-perm", ["orders"])}</div>
+          <div><button class="btn btn-primary" type="submit">建立邀請連結</button></div>
+          <p class="small muted" style="margin:0">員工看不到「員工」這一頁，也不能開新店或改方案。沒有「進銷存」或「報表」權限的人看不到成本。</p>
+        </form>
+      </section>`;
+    main.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => { const r = document.getElementById("pe-" + b.dataset.edit); r.hidden = !r.hidden; }));
+    main.querySelectorAll("[data-save]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await DB.staff.update(b.dataset.save, picked(".pe-" + b.dataset.save)); toast("已更新權限"); viewStaff(); }
+      catch (err) { toast(err.message, "error"); b.disabled = false; }
+    }));
+    main.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", async () => {
+      if (!(await confirmBox({ title: `移除 ${b.dataset.email}？`, body: "對方會馬上無法進入這家店的後台。之後要再加入需要重新邀請。", ok: "移除", danger: true }))) return;
+      try { await DB.staff.remove(b.dataset.remove); toast("已移除"); viewStaff(); } catch (err) { toast(err.message, "error"); }
+    }));
+    main.querySelectorAll("[data-cancel]").forEach(b => b.addEventListener("click", async () => {
+      try { await DB.staff.cancelInvite(b.dataset.cancel); toast("已取消邀請"); viewStaff(); } catch (err) { toast(err.message, "error"); }
+    }));
+    document.getElementById("inv-form").addEventListener("submit", async e => {
+      e.preventDefault();
+      const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
+      try { const r = await DB.staff.invite(document.getElementById("inv-email").value, picked(".inv-perm")); toast("已建立邀請連結"); viewStaff(r.link); window.scrollTo(0, 0); }
+      catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
+  }
+
+  /* ---------- 打開員工邀請連結 #admin/join/<token> ---------- */
+  const INVITE_KEY = "shopPlatform.pendingInvite";
+  window.AdminPendingInvite = {
+    get: () => { try { return localStorage.getItem(INVITE_KEY) || ""; } catch (e) { return ""; } },
+    set: t => { try { t ? localStorage.setItem(INVITE_KEY, t) : localStorage.removeItem(INVITE_KEY); } catch (e) { /* 忽略 */ } },
+  };
+  window.AdminJoin = async function (token, st) {
+    const wrap = inner => { root().innerHTML = `<div class="gate"><div class="gate-card is-wide">${inner}</div></div>`; };
+    let info = null;
+    try { info = await DB.admin.inviteInfo(token); } catch (err) { return wrap(`<h1>員工邀請</h1><div class="notice">${esc(err.message)}</div>`); }
+    const done = msg => { window.AdminPendingInvite.set(""); wrap(`<h1>員工邀請</h1><div class="notice">${msg}</div><div class="actions"><a class="btn" href="#admin">到商家後台</a></div>`); };
+    if (!info) return done("邀請連結不正確，請跟店主要一個新的連結。");
+    if (info.accepted) return done("這個邀請已經用過了。如果是你本人加入的，直接登入後台就可以。");
+    if (info.expired) return done("邀請已過期，請店主重新邀請。");
+    window.AdminPendingInvite.set(token);   // 註冊、點確認信回來後還記得這個邀請
+    const head = `<h1>加入「${esc(info.storeName)}」</h1>
+      <p class="muted">店主邀請你成為員工，可以使用：${esc(info.perms.map(permName).join("、"))}</p>`;
+    if (st.state === "login") {
+      wrap(`${head}<div class="notice">請用被邀請的 Email（${esc(info.email)}）登入；還沒有帳號就先註冊，確認信點完會回到這裡。</div><div id="join-gate"></div>`);
+      const box = document.getElementById("join-gate");
+      window.AdminGate({ state: "login", side: "admin" }, ["admin"], box);
+      return;
+    }
+    if (!info.emailMatches) {
+      wrap(`${head}<div class="notice">你現在用 <b>${esc((DB.admin.user() || {}).email || "")}</b> 登入，但邀請是給 ${esc(info.email)} 的。請登出後用被邀請的 Email 登入。</div>
+        <div class="actions"><button class="btn btn-primary" id="join-out" type="button">登出，換帳號</button></div>`);
+      document.getElementById("join-out").addEventListener("click", async () => { await DB.admin.logout(); Router.render(); });
+      return;
+    }
+    wrap(`${head}<div class="actions"><button class="btn btn-primary" id="join-go" type="button">加入</button><button class="btn btn-ghost" id="join-skip" type="button">先不要</button></div>`);
+    document.getElementById("join-skip").addEventListener("click", () => { window.AdminPendingInvite.set(""); Router.go("admin"); });
+    document.getElementById("join-go").addEventListener("click", async e => {
+      e.target.disabled = true;
+      try { const r = await DB.admin.acceptInvite(token); window.AdminPendingInvite.set(""); toast(`已加入「${r.name}」`); Router.go("admin"); }
+      catch (err) { toast(err.message, "error"); e.target.disabled = false; }
+    });
+  };
+
+
+  /* ---------- 商品評價 ---------- */
+  let rvRating = "", rvPage = 0;
+  const rvStars = n => `<span class="rv-stars" role="img" aria-label="${n} 顆星">${"★".repeat(n)}<span>${"★".repeat(5 - n)}</span></span>`;
+  const RV_PILL = { visible: ["ok", "公開中"], pending: ["warn", "待審核"], hidden: ["idle", "已隱藏"] };
+  async function viewReviews(status) {
+    status = status || "";
+    const cfg = DB.reviews.settings();
+    shell("reviews", `<div class="page-head"><h1>評價</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);
+    let L;
+    try { L = await DB.reviews.list({ status, rating: rvRating || null }, { offset: rvPage * 50, limit: 50 }); }
+    catch (err) { document.getElementById("main").innerHTML = `<div class="panel"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    const main = document.getElementById("main"); if (!main) return;
+    const C = L.counts;
+    const tab = (k, t, n) => `<a href="#admin/reviews${k ? "/" + k : ""}" class="${status === k ? "is-on" : ""}">${t}<span class="n">${n}</span></a>`;
+    main.innerHTML = `
+      <div class="page-head"><h1>評價</h1>${C.avg != null ? `<span class="muted">公開評價平均 <b class="num">${(+C.avg).toFixed(1)}</b> 顆星</span>` : ""}</div>
+      ${can("settings") ? `<section class="panel"><div class="panel-body rv-set">
+        <label class="check"><input type="checkbox" id="rv-on" ${cfg.enabled ? "checked" : ""}> 開放顧客評價（買過、已出貨的會員才能評）</label>
+        <label class="check"><input type="checkbox" id="rv-review" ${cfg.autoPublish ? "" : "checked"}> 新評價要我先確認才公開</label>
+        <button class="btn btn-sm" type="button" id="rv-save-set">儲存設定</button>
+      </div></section>` : ""}
+      <section class="panel">
+        <nav class="tabs" aria-label="評價狀態">${tab("", "全部", C.all)}${tab("pending", "待審核", C.pending)}${tab("visible", "公開中", C.visible)}${tab("hidden", "已隱藏", C.hidden)}</nav>
+        <div class="panel-head"><div class="toolbar"><select id="rv-rating" aria-label="星等"><option value="">全部星等</option>${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${String(rvRating) === String(n) ? "selected" : ""}>${n} 顆星</option>`).join("")}</select></div></div>
+        ${L.rows.length ? `<ul class="rv-admin">${L.rows.map(r => `<li data-id="${r.id}">
+          <div class="rv-a-head">${rvStars(r.rating)}<span class="pill ${RV_PILL[r.status][0]}">${RV_PILL[r.status][1]}</span>
+            ${DB.products.get(r.productId) ? `<a href="#admin/product/${r.productId}">${esc(r.productName)}</a>` : esc(r.productName || "（商品已刪除）")}
+            <span class="small muted">${esc(r.customerName || r.name)}・${can("orders") ? `<a href="#admin/order/${esc(r.orderNumber)}">${esc(r.orderNumber)}</a>` : esc(r.orderNumber)}・${date(r.createdAt, true)}${r.updatedAt && r.updatedAt !== r.createdAt ? "（修改過）" : ""}</span></div>
+          ${r.content ? `<p class="rv-a-text">${esc(r.content)}</p>` : `<p class="rv-a-text muted small">（只給星等）</p>`}
+          <div class="rv-a-reply">
+            <textarea rows="2" maxlength="500" placeholder="回覆會公開在商品頁（選填）" aria-label="回覆">${esc(r.reply || "")}</textarea>
+            <div class="actions"><button class="btn btn-sm" type="button" data-act="reply">${r.reply ? "更新回覆" : "回覆"}</button>
+              ${r.status === "visible" ? `<button class="btn btn-sm btn-ghost" type="button" data-act="hidden">隱藏</button>` : `<button class="btn btn-sm btn-primary" type="button" data-act="visible">${r.status === "pending" ? "通過並公開" : "重新公開"}</button>`}</div>
+          </div>
+        </li>`).join("")}</ul>` : `<div class="empty">${status === "pending" ? "沒有待審核的評價" : "還沒有評價"}</div>`}
+        <div id="rv-pager">${pager(L.total, rvPage, 50)}</div>
+      </section>`;
+    document.getElementById("rv-rating").addEventListener("change", e => { rvRating = e.target.value; rvPage = 0; viewReviews(status); });
+    document.getElementById("rv-pager").addEventListener("click", e => { const b = e.target.closest("[data-page]"); if (b) { rvPage = +b.dataset.page; viewReviews(status); } });
+    main.querySelectorAll(".rv-admin [data-act]").forEach(b => b.addEventListener("click", async () => {
+      const li = b.closest("li"), id = li.dataset.id, act = b.dataset.act;
+      b.disabled = true;
+      try {
+        if (act === "reply") { await DB.reviews.reply(id, li.querySelector("textarea").value); toast("已儲存回覆"); b.disabled = false; b.textContent = li.querySelector("textarea").value.trim() ? "更新回覆" : "回覆"; }
+        else { await DB.reviews.setStatus(id, act); toast(act === "visible" ? "已公開" : "已隱藏"); viewReviews(status); }
+      } catch (err) { toast(err.message, "error"); b.disabled = false; }
+    }));
+    const ss = document.getElementById("rv-save-set");
+    if (ss) ss.addEventListener("click", async () => {
+      ss.disabled = true;
+      try { await DB.settings.update({ reviews: { enabled: document.getElementById("rv-on").checked, autoPublish: !document.getElementById("rv-review").checked } }); toast("已儲存評價設定"); ss.disabled = false; }
+      catch (err) { toast(err.message, "error"); ss.disabled = false; }
+    });
+  }
 
   /* ---------- 外觀（佈景主題） ---------- */
   function viewTheme() {
@@ -223,8 +408,8 @@
       <tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c[2] || ""}">${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty">這段期間沒有資料</div>`}</section>`;
     body.innerHTML = `
       <div class="kpis">
-        <div class="kpi"><span>營收（已付款）</span><strong>${money(S.revenue)}</strong><small>${S.orders} 筆訂單・${S.units} 件</small></div>
-        <div class="kpi"><span>毛利</span><strong>${money(S.gross)}</strong><small>毛利率 ${pct(S.gross, net)}</small></div>
+        <div class="kpi"><span>營收（已付款）</span><strong>${money(S.revenue)}</strong><small>${S.orders} 筆訂單・${S.units} 件${R.refunds && R.refunds.amount ? `・退款 ${money(R.refunds.amount)}` : ""}</small></div>
+        <div class="kpi"><span>毛利${R.refunds && R.refunds.amount ? "（扣退款）" : ""}</span><strong>${money(S.gross - ((R.refunds || {}).amount || 0) + ((R.refunds || {}).restockedCost || 0))}</strong><small>毛利率 ${pct(S.gross - ((R.refunds || {}).amount || 0) + ((R.refunds || {}).restockedCost || 0), net - ((R.refunds || {}).amount || 0))}</small></div>
         <div class="kpi"><span>平均客單</span><strong>${money(S.orders ? S.revenue / S.orders : 0)}</strong><small>含運費</small></div>
         <div class="kpi"><span>購買顧客</span><strong>${S.customers}</strong><small>新客 ${S.newCustomers}・回購 ${S.customers - S.newCustomers}</small></div>
       </div>
@@ -242,6 +427,8 @@
             <dt class="is-total">＝ 毛利</dt><dd class="is-total">${money(S.gross)}</dd>
             <dt>＋ 運費收入</dt><dd>${money(S.shipping)}</dd>
             <dt class="is-total">營收</dt><dd class="is-total">${money(S.revenue)}</dd>
+            ${R.refunds && R.refunds.amount ? `<dt>− 退款（${R.refunds.count} 筆）</dt><dd>${money(R.refunds.amount)}</dd>
+            <dt class="is-total">實收</dt><dd class="is-total">${money(S.revenue - R.refunds.amount)}</dd>` : ""}
           </dl>
           <p class="small muted" style="margin:0">成本用下單當時的平均成本。另外：待付款 ${R.pending.orders} 筆（${money(R.pending.amount)}）、已取消 ${R.cancelled.orders} 筆（${money(R.cancelled.amount)}），不算進營收。</p></div>
         </section>
@@ -319,6 +506,7 @@
         ["期間", `${R.from} ～ ${R.to}`], ["營收（已付款）", S.revenue], ["訂單數", S.orders], ["件數", S.units], ["商品金額", S.goods], ["折扣", S.discount],
         ["商品成本", S.cost], ["毛利", S.gross], ["運費收入", S.shipping], ["購買顧客", S.customers], ["新客", S.newCustomers],
         ["待付款筆數", R.pending.orders], ["待付款金額", R.pending.amount], ["取消筆數", R.cancelled.orders], ["取消金額", R.cancelled.amount],
+        ["退款筆數", (R.refunds || {}).count || 0], ["退款金額", (R.refunds || {}).amount || 0], ["退貨加回的成本", (R.refunds || {}).restockedCost || 0],
         ["進貨件數", R.purchases.units], ["進貨花費", R.purchases.amount]] },
       { name: R.unit === "day" ? "每日" : "每月", columns: [{ header: R.unit === "day" ? "日期" : "月份", width: 12 }, Object.assign({ header: "訂單" }, n), Object.assign({ header: "營收" }, n), Object.assign({ header: "毛利" }, n)],
         rows: R.series.map(x => [R.unit === "day" ? x.date : x.date.slice(0, 7), x.orders, x.revenue, x.gross]) },
@@ -367,14 +555,16 @@
       <div class="page-head"><h1>我的商店</h1></div>
       <section class="panel">
         <div class="table-wrap"><table class="tbl">
-          <thead><tr><th>商店</th><th>網址代號</th><th>方案</th><th>到期</th><th></th></tr></thead>
+          <thead><tr><th>商店</th><th>網址代號</th><th>身分</th><th>方案</th><th>到期</th><th></th></tr></thead>
           <tbody>${list.map(x => `<tr>
             <td><b>${esc(x.name)}</b>${x.id === cur.id ? ` <span class="pill info">目前</span>` : ""}</td>
             <td class="mono">${esc(x.slug)}</td>
+            <td class="small">${x.role === "owner" ? "店主" : "員工"}</td>
             <td>${B.pill(x.billing)}</td>
             <td class="small">${esc(B.short(x.billing))}</td>
             <td class="r">${x.id === cur.id ? "" : `<button class="btn btn-sm" data-use="${esc(x.slug)}">切換到這家</button>`}
-              <a class="btn btn-sm btn-ghost" href="${esc(DB.admin.storeUrl(x.slug))}#shop" target="_blank" rel="noopener">看前台 ↗</a></td>
+              <a class="btn btn-sm btn-ghost" href="${esc(DB.admin.storeUrl(x.slug))}#shop" target="_blank" rel="noopener">看前台 ↗</a>
+              ${x.id === cur.id && x.role === "staff" ? `<button class="btn btn-sm btn-ghost" type="button" id="st-leave">離開這家店</button>` : ""}</td>
           </tr>`).join("")}</tbody>
         </table></div>
       </section>
@@ -386,6 +576,11 @@
       DB.admin.useStore(b.dataset.use); toast("已切換商店"); Router.go("admin");
     }));
     window.Billing.storeForm(document.getElementById("new-store"), DB.home.info(), () => Router.go("admin"));
+    const lv = document.getElementById("st-leave");
+    if (lv) lv.addEventListener("click", async () => {
+      if (!(await confirmBox({ title: `離開「${cur.name}」？`, body: "離開後就不能再進這家店的後台，要回來需要店主重新邀請。", ok: "離開", danger: true }))) return;
+      try { await DB.admin.leave(); toast("已離開"); Router.go("admin"); } catch (err) { toast(err.message, "error"); }
+    });
   }
 
   /* ---------- 總覽 ---------- */
@@ -393,6 +588,23 @@
     const s = DB.stats();
     const low = DB.products.lowStock();
     const recent = DB.orders.list().slice(0, 6);
+    const lowPanel = `<section class="panel">
+          <div class="panel-head"><h2>庫存偏低</h2>${can("products") ? `<a class="small" href="#admin/products">管理商品</a>` : ""}</div>
+          ${low.length ? `<div class="table-wrap"><table class="tbl"><tbody>
+            ${low.slice(0, 6).map(x => `<tr ${can("products") ? `class="is-link" data-href="admin/product/${x.product.id}"` : ""}>
+              <td><div class="prod-cell">${thumb(x.product)}<div><span>${esc(x.product.name)}</span><span class="small muted">${esc(Object.values(x.variant.options).join(" / ") || "單一規格")}</span></div></div></td>
+              <td class="r">${x.variant.stock === 0 ? `<span class="pill bad">售完</span>` : `<span class="pill warn">剩 ${x.variant.stock}</span>`}</td>
+            </tr>`).join("")}
+          </tbody></table></div>` : `<div class="empty">庫存都充足</div>`}
+        </section>`;
+    // 沒有訂單權限的員工：只看商店網址和庫存提醒
+    if (!can("orders")) {
+      return shell("dash", `
+        <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
+        ${DB.mode === "remote" ? storeUrlBox() : ""}
+        <div class="notice">你是這家店的員工，可以使用：${esc(DB.admin.me().perms.map(permName).join("、") || "（沒有權限）")}。</div>
+        ${lowPanel}`);
+    }
     shell("dash", `
       <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
       ${DB.mode === "remote" ? storeUrlBox() : ""}
@@ -400,22 +612,15 @@
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>
         <div class="kpi"><span>本月營收</span><strong>${money(s.monthRevenue)}</strong><small>平均客單 ${money(s.avgOrder)}</small></div>
         <a class="kpi" href="#admin/orders/paid"><span>待出貨</span><strong>${s.toShip}</strong><small>待付款 ${s.toPay} 筆</small></a>
-        <a class="kpi" href="#admin/customers"><span>會員數</span><strong>${s.customers}</strong><small>含結帳自動建立</small></a>
+        ${can("customers") ? `<a class="kpi" href="#admin/customers"><span>會員數</span><strong>${s.customers}</strong><small>含結帳自動建立</small></a>`
+          : `<div class="kpi"><span>本月訂單</span><strong>${s.monthOrders}</strong><small>不含已取消</small></div>`}
       </div>
       <div class="grid-2">
         <section class="panel">
           <div class="panel-head"><h2>近 14 天營收</h2><span class="small muted">不含已取消</span></div>
           <div class="panel-body">${barChart(s.daily)}</div>
         </section>
-        <section class="panel">
-          <div class="panel-head"><h2>庫存偏低</h2><a class="small" href="#admin/products">管理商品</a></div>
-          ${low.length ? `<div class="table-wrap"><table class="tbl"><tbody>
-            ${low.slice(0, 6).map(x => `<tr class="is-link" data-href="admin/product/${x.product.id}">
-              <td><div class="prod-cell">${thumb(x.product)}<div><span>${esc(x.product.name)}</span><span class="small muted">${esc(Object.values(x.variant.options).join(" / ") || "單一規格")}</span></div></div></td>
-              <td class="r">${x.variant.stock === 0 ? `<span class="pill bad">售完</span>` : `<span class="pill warn">剩 ${x.variant.stock}</span>`}</td>
-            </tr>`).join("")}
-          </tbody></table></div>` : `<div class="empty">庫存都充足</div>`}
-        </section>
+        ${lowPanel}
       </div>
       <section class="panel">
         <div class="panel-head"><h2>最新訂單</h2><a class="small" href="#admin/orders">全部訂單</a></div>
@@ -448,27 +653,43 @@
     return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
   }
 
-  function ordersTable(list) {
+  // sel：傳入 Set 時多一欄勾選框（訂單頁批次處理用）
+  const refundTag = o => o.refundTotal ? ` <span class="pill bad" title="已退款">${o.refundTotal >= o.total ? "全額退款" : "退 " + money(o.refundTotal)}</span>` : "";
+  function ordersTable(list, sel) {
     if (!list.length) return `<div class="empty">沒有符合的訂單</div>`;
     return `<div class="table-wrap"><table class="tbl">
-      <thead><tr><th>訂單編號</th><th>日期</th><th>顧客</th><th>取貨</th><th>付款</th><th>狀態</th><th class="r">金額</th></tr></thead>
-      <tbody>${list.map(o => `<tr class="is-link" data-href="admin/order/${o.id}">
+      <thead><tr>${sel ? `<th class="ck"><input type="checkbox" id="o-all" aria-label="全選這一頁" ${list.every(o => sel.has(o.id)) ? "checked" : ""}></th>` : ""}<th>訂單編號</th><th>日期</th><th>顧客</th><th>取貨</th><th>付款</th><th>狀態</th><th class="r">金額</th></tr></thead>
+      <tbody>${list.map(o => `<tr class="is-link ${sel && sel.has(o.id) ? "is-sel" : ""}" data-href="admin/order/${o.id}">
+        ${sel ? `<td class="ck"><input type="checkbox" class="o-ck" value="${o.id}" ${sel.has(o.id) ? "checked" : ""} aria-label="選取 ${esc(o.number)}"></td>` : ""}
         <td class="mono">${esc(o.number)}</td>
         <td class="num">${date(o.createdAt, true)}</td>
         <td>${esc(o.contact.name)}</td>
         <td>${esc(o.shipping.methodName)}</td>
         <td>${payPill(o.payment)}</td>
-        <td>${statusPill(o.status)}</td>
+        <td>${statusPill(o.status)}${refundTag(o)}</td>
         <td class="r num">${money(o.total)}</td>
       </tr>`).join("")}</tbody></table></div>`;
   }
+
+  // datetime-local 輸入框 ↔ ISO 時間
+  const toLocalInput = iso => { if (!iso) return ""; const d = new Date(iso); const p2 = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+  const fromLocalInput = v => (v ? new Date(v).toISOString() : null);
+  const productPill = p => {
+    const s = DB.products.schedule(p);
+    return s === "draft" ? `<span class="pill idle">草稿</span>`
+      : s === "scheduled" ? `<span class="pill info" title="${esc(date(p.publishAt, true))} 上架">排程中</span>`
+      : s === "ended" ? `<span class="pill warn" title="${esc(date(p.unpublishAt, true))} 已自動下架">已下架（到期）</span>`
+      : `<span class="pill ok">上架中</span>${p.unpublishAt ? ` <span class="small muted">到 ${esc(date(p.unpublishAt))}</span>` : ""}`;
+  };
 
   /* ---------- 商品列表 ---------- */
   const pf = { q: "", categoryId: "", status: "" };
   function viewProducts() {
     const cats = DB.categories.list();
     shell("products", `
-      <div class="page-head"><h1>商品</h1><div class="actions"><a class="btn btn-primary" href="#admin/product/new">新增商品</a></div></div>
+      <div class="page-head"><h1>商品</h1><div class="actions">
+        <button class="btn" type="button" id="pp-export">匯出 Excel</button><button class="btn" type="button" id="pp-import">匯入 Excel</button>
+        <a class="btn" href="#admin/products/sort">調整排序</a><a class="btn btn-primary" href="#admin/product/new">新增商品</a></div></div>
       <section class="panel">
         <div class="panel-head">
           <div class="toolbar">
@@ -493,7 +714,7 @@
             <td class="num">${p.variants.length}</td>
             <td class="r num">${lo === hi ? money(lo) : money(lo) + "–" + money(hi).replace("NT$", "")}</td>
             <td class="r num">${stock === 0 ? `<span class="pill bad">0</span>` : stock}</td>
-            <td>${p.status === "active" ? `<span class="pill ok">上架中</span>` : `<span class="pill idle">草稿</span>`}</td>
+            <td>${productPill(p)}</td>
           </tr>`;
         }).join("")}</tbody></table></div>` : `<div class="empty">沒有符合的商品</div>`;
     };
@@ -501,6 +722,92 @@
     document.getElementById("pf-q").addEventListener("input", e => { pf.q = e.target.value; draw(); });
     document.getElementById("pf-cat").addEventListener("change", e => { pf.categoryId = e.target.value; draw(); });
     document.getElementById("pf-status").addEventListener("change", e => { pf.status = e.target.value; draw(); });
+    document.getElementById("pp-export").addEventListener("click", () => {
+      const ex = window.ProductImport.exportRows(DB.products.list(), cats, can("cost"));
+      const cols = ex.header.map(h => ({ header: h, width: h === "商品ID" ? 38 : h === "商品描述" ? 30 : h === "商品名稱" ? 22 : 12, type: ["售價", "成本", "庫存"].includes(h) ? "number" : "text" }));
+      download(XLSX.build([{ name: "商品", columns: cols, rows: ex.rows }]), `商品_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast(`已匯出 ${ex.rows.length} 個規格`);
+    });
+    document.getElementById("pp-import").addEventListener("click", importPrompt);
+  }
+
+  // 匯入 Excel：選檔 → 預覽要改什麼、有沒有錯 → 確認才存
+  function importPrompt() {
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    const close = () => wrap.remove();
+    wrap.innerHTML = `<div class="modal is-wide imp" role="dialog" aria-modal="true" aria-labelledby="imp-title">
+      <h3 id="imp-title">匯入商品（Excel）</h3>
+      <ol class="small imp-steps">
+        <li>先按「匯出 Excel」拿到目前的商品表，直接在上面改或往下新增。</li>
+        <li>一列是一個規格；同一個商品的規格名稱要一樣。有「商品ID」的是更新，沒有的是新增。</li>
+        <li>「庫存」只用在新增的規格；已經有的規格要改庫存請用「進銷存 → 盤點」。檔案裡沒列到的規格不會被刪掉。</li>
+      </ol>
+      <label class="img-drop"><input type="file" id="imp-file" accept=".xlsx,.csv"><b>選擇檔案</b><span>.xlsx 或 .csv（UTF-8）</span></label>
+      <div id="imp-result"></div>
+      <div class="modal-actions"><button type="button" class="btn" id="imp-cancel">取消</button><button class="btn btn-primary" type="button" id="imp-go" disabled>確認匯入</button></div>
+    </div>`;
+    document.body.appendChild(wrap);
+    let planned = null;
+    wrap.querySelector("#imp-cancel").addEventListener("click", close);
+    wrap.querySelector("#imp-file").addEventListener("change", async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const box = wrap.querySelector("#imp-result"), go = wrap.querySelector("#imp-go");
+      box.innerHTML = `<div class="small muted">讀取中…</div>`; go.disabled = true; planned = null;
+      try {
+        const rows = await XLSX.read(f);
+        planned = window.ProductImport.plan(rows, { products: DB.products.list(), categories: DB.categories.list(), canCost: can("cost") });
+      } catch (err) { box.innerHTML = `<div class="notice">${esc(err.message)}</div>`; return; }
+      const P = planned, S = P.summary;
+      box.innerHTML = P.errors.length ? `<div class="notice is-bad"><b>有 ${P.errors.length} 個問題，修正後再匯入一次：</b>
+          <ul class="imp-list">${P.errors.slice(0, 50).map(x => `<li>第 ${x.row} 列：${esc(x.msg)}</li>`).join("")}${P.errors.length > 50 ? `<li>…還有 ${P.errors.length - 50} 個</li>` : ""}</ul></div>`
+        : !P.payloads.length ? `<div class="notice">檔案裡的商品跟目前一樣，沒有要改的地方。</div>`
+        : `<div class="imp-sum"><b>共 ${S.rows} 列</b>：新增 ${S.createProducts} 個商品、更新 ${S.updateProducts} 個商品（改 ${S.changedVariants} 個規格、新增 ${S.newVariants} 個規格）</div>
+          <ul class="imp-list">${P.changes.slice(0, 80).map(c => `<li><span class="pill ${c.kind === "create" ? "ok" : "info"}">${c.kind === "create" ? "新增" : "更新"}</span> ${esc(c.name)} <span class="small muted">${esc(c.detail)}</span></li>`).join("")}${P.changes.length > 80 ? `<li class="muted">…還有 ${P.changes.length - 80} 個</li>` : ""}</ul>
+          ${(P.notes || []).length ? `<div class="small muted">${P.notes.map(esc).join("<br>")}</div>` : ""}`;
+      go.disabled = !(P && !P.errors.length && P.payloads.length);
+    });
+    wrap.querySelector("#imp-go").addEventListener("click", async e => {
+      if (!planned) return;
+      e.target.disabled = true; e.target.textContent = "匯入中…";
+      try { await DB.products.saveMany(planned.payloads); close(); toast(`匯入完成：新增 ${planned.summary.createProducts} 個、更新 ${planned.summary.updateProducts} 個商品`); viewProducts(); }
+      catch (err) { toast(err.message, "error"); e.target.disabled = false; e.target.textContent = "確認匯入"; }
+    });
+  }
+
+  // 自訂排序：拖曳或按上下箭頭，前台照這個順序顯示
+  function viewProductSort() {
+    const list = DB.products.list();
+    shell("products", `
+      <div class="page-head"><div class="crumbs"><a href="#admin/products">商品</a><span>/</span><span>調整排序</span></div>
+        <div class="actions"><a class="btn" href="#admin/products">取消</a><button class="btn btn-primary" id="ps-save" type="button">儲存排序</button></div></div>
+      <p class="small muted" style="margin:0">拖曳整列，或按 ↑ ↓ 調整。前台商品列表會照這個順序；之後新增的商品會排在最前面。</p>
+      <section class="panel"><ol class="sort-list" id="ps-list">${list.map(p => `<li draggable="true" data-id="${p.id}">
+        <span class="grip" aria-hidden="true">⋮⋮</span>${thumb(p)}<span class="sort-name">${esc(p.name)}</span>${productPill(p)}
+        <span class="sort-btns"><button class="btn btn-sm btn-ghost" type="button" data-mv="-1" aria-label="往上">↑</button><button class="btn btn-sm btn-ghost" type="button" data-mv="1" aria-label="往下">↓</button></span>
+      </li>`).join("")}</ol></section>`);
+    const ol = document.getElementById("ps-list");
+    let dragging = null;
+    ol.addEventListener("dragstart", e => { dragging = e.target.closest("li"); dragging.classList.add("is-drag"); e.dataTransfer.effectAllowed = "move"; });
+    ol.addEventListener("dragend", () => { if (dragging) dragging.classList.remove("is-drag"); dragging = null; });
+    ol.addEventListener("dragover", e => {
+      e.preventDefault();
+      const over = e.target.closest("li"); if (!dragging || !over || over === dragging) return;
+      const r = over.getBoundingClientRect();
+      ol.insertBefore(dragging, e.clientY > r.top + r.height / 2 ? over.nextSibling : over);
+    });
+    ol.addEventListener("click", e => {
+      const b = e.target.closest("[data-mv]"); if (!b) return;
+      const li = b.closest("li");
+      if (b.dataset.mv === "-1" && li.previousElementSibling) ol.insertBefore(li, li.previousElementSibling);
+      if (b.dataset.mv === "1" && li.nextElementSibling) ol.insertBefore(li.nextElementSibling, li);
+      b.focus();
+    });
+    document.getElementById("ps-save").addEventListener("click", async e => {
+      e.target.disabled = true;
+      try { await DB.products.sortOrder([...ol.children].map(li => li.dataset.id)); toast("已儲存排序"); Router.go("admin/products"); }
+      catch (err) { toast(err.message, "error"); e.target.disabled = false; }
+    });
   }
 
   /* ---------- 商品編輯 ---------- */
@@ -519,7 +826,7 @@
       <div class="page-head">
         <div class="crumbs"><a href="#admin/products">商品</a><span>/</span><span>${isNew ? "新增商品" : esc(p.name)}</span></div>
         <div class="actions">
-          ${isNew ? "" : `<a class="btn btn-ghost" href="#shop/p/${p.id}">看前台頁面</a><button class="btn" id="pe-del">刪除</button>`}
+          ${isNew ? "" : `<a class="btn btn-ghost" href="#shop/p/${p.id}">看前台頁面</a><button class="btn" id="pe-dup" type="button">複製</button><button class="btn" id="pe-del">刪除</button>`}
           <button class="btn btn-primary" id="pe-save">儲存</button>
         </div>
       </div>
@@ -565,6 +872,11 @@
             <div class="panel-body">
               <label class="check"><input type="radio" name="pe-status" id="pe-st-active" value="active" ${draft.status === "active" ? "checked" : ""}> 上架中（前台看得到）</label>
               <label class="check"><input type="radio" name="pe-status" id="pe-st-draft" value="draft" ${draft.status === "draft" ? "checked" : ""}> 草稿（前台看不到）</label>
+              <details class="pe-sched" ${draft.publishAt || draft.unpublishAt ? "open" : ""}><summary class="small">排程上下架</summary>
+                <div class="field"><label for="pe-pub">上架時間</label><input type="datetime-local" id="pe-pub" value="${toLocalInput(draft.publishAt)}"><span class="hint">留空 = 選「上架中」後馬上上架</span></div>
+                <div class="field"><label for="pe-unpub">自動下架時間</label><input type="datetime-local" id="pe-unpub" value="${toLocalInput(draft.unpublishAt)}"><span class="hint">留空 = 不會自動下架（適合限時商品、預購）</span></div>
+                <p class="small muted" style="margin:0">要選「上架中」，排程才會生效。</p>
+              </details>
             </div>
           </section>
           <section class="panel">
@@ -667,13 +979,13 @@
     function drawVars() {
       const hasOpts = draft.variants.some(v => Object.keys(v.options).length);
       varsEl.innerHTML = `<div class="table-wrap"><table class="tbl variant-tbl">
-        <thead><tr><th>${hasOpts ? "規格" : "單一規格"}</th><th>貨號</th><th>售價</th><th>庫存</th><th>平均成本</th></tr></thead>
+        <thead><tr><th>${hasOpts ? "規格" : "單一規格"}</th><th>貨號</th><th>售價</th><th>庫存</th>${can("cost") ? "<th>平均成本</th>" : ""}</tr></thead>
         <tbody>${draft.variants.map((v, i) => `<tr>
           <td>${esc(Object.values(v.options).join(" / ") || "預設")}</td>
           <td><input type="text" class="v-in" data-i="${i}" data-k="sku" id="pe-v-sku-${i}" value="${esc(v.sku)}" aria-label="貨號"></td>
           <td><input type="number" class="v-in" data-i="${i}" data-k="price" id="pe-v-price-${i}" value="${v.price}" min="0" step="1" aria-label="價格"></td>
           <td><input type="number" class="v-in" data-i="${i}" data-k="stock" id="pe-v-stock-${i}" value="${v.stock}" min="0" step="1" aria-label="庫存"></td>
-          <td><input type="number" class="v-in" data-i="${i}" data-k="cost" id="pe-v-cost-${i}" value="${v.cost || 0}" min="0" step="1" aria-label="平均成本"></td>
+          ${can("cost") ? `<td><input type="number" class="v-in" data-i="${i}" data-k="cost" id="pe-v-cost-${i}" value="${v.cost || 0}" min="0" step="1" aria-label="平均成本"></td>` : ""}
         </tr>`).join("")}</tbody></table></div>`;
     }
     drawOpts(); drawVars();
@@ -705,6 +1017,9 @@
       draft.description = document.getElementById("pe-desc").value;
       draft.status = document.getElementById("pe-st-active").checked ? "active" : "draft";
       draft.categoryIds = [...document.querySelectorAll(".pe-cat:checked")].map(x => x.value);
+      draft.publishAt = fromLocalInput(document.getElementById("pe-pub").value);
+      draft.unpublishAt = fromLocalInput(document.getElementById("pe-unpub").value);
+      if (draft.publishAt && draft.unpublishAt && draft.unpublishAt <= draft.publishAt) return toast("自動下架時間要晚於上架時間", "error");
       draft.options = draft.options.filter(o => o.name && o.values.length);
       draft.variants.forEach((v, i) => { if (!v.sku) v.sku = "SKU-" + Date.now().toString(36).toUpperCase().slice(-5) + "-" + (i + 1); });
       const btn = e.currentTarget;
@@ -714,6 +1029,11 @@
         toast("已儲存");
         Router.go("admin/product/" + saved.id);
       } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
+    const dup = document.getElementById("pe-dup");
+    if (dup) dup.addEventListener("click", async () => {
+      if (!(await confirmBox({ title: `複製「${p.name}」？`, body: "會建立一個草稿，規格和價格一樣；庫存是 0、貨號清空、圖片要重新上傳。", ok: "複製" }))) return;
+      try { const nid = await DB.products.duplicate(p.id); toast("已複製，記得改名稱和上傳圖片"); Router.go("admin/product/" + nid); } catch (err) { toast(err.message, "error"); }
     });
     const del = document.getElementById("pe-del");
     if (del) del.addEventListener("click", async () => {
@@ -760,6 +1080,7 @@
 
   /* ---------- 訂單列表 ---------- */
   let oq = "", oPage = 0, oStatus = null;
+  const oSel = new Set(), oSeen = {};   // 勾選的訂單（換頁也保留）
   const O_PAGE = 50;
   // 分頁按鈕：上一頁／第幾頁／下一頁
   function pager(total, page, size) {
@@ -782,10 +1103,12 @@
           ${tab("", "全部")}${tab("pending_payment", "待付款")}${tab("paid", "待出貨")}${tab("shipped", "已出貨")}${tab("completed", "已完成")}${tab("cancelled", "已取消")}
         </nav>
         <div class="panel-head"><div class="toolbar"><input type="search" id="oq" placeholder="搜尋編號、姓名、手機" value="${esc(oq)}" aria-label="搜尋訂單"></div></div>
+        <div class="bulk-bar" id="o-bulk" hidden></div>
         <div id="o-list"><div class="empty">載入中…</div></div>
         <div id="o-pager"></div>
       </section>`);
-    if (status !== oStatus) { oStatus = status; oPage = 0; }
+    if (status !== oStatus) { oStatus = status; oPage = 0; oSel.clear(); }
+    let rows = [];
     // 一頁 50 筆，由資料庫查（全部訂單，不只近期）
     let seq = 0;
     const draw = async () => {
@@ -793,13 +1116,52 @@
       try {
         const r = await DB.orders.query({ status, q: oq }, { offset: oPage * O_PAGE, limit: O_PAGE });
         if (my !== seq || !document.getElementById("o-list")) return;
-        document.getElementById("o-list").innerHTML = ordersTable(r.rows);
+        rows = r.rows; r.rows.forEach(o => { oSeen[o.id] = o; });
+        document.getElementById("o-list").innerHTML = ordersTable(r.rows, oSel);
         document.getElementById("o-pager").innerHTML = pager(r.total, oPage, O_PAGE);
+        drawBulk();
       } catch (err) { if (my === seq) document.getElementById("o-list").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
     };
     draw();
     let timer = null;
     document.getElementById("oq").addEventListener("input", e => { oq = e.target.value; oPage = 0; clearTimeout(timer); timer = setTimeout(draw, 300); });
+    // 勾選與批次動作
+    const drawBulk = () => {
+      const bar = document.getElementById("o-bulk"); if (!bar) return;
+      const picked = [...oSel].map(id => oSeen[id]).filter(Boolean);
+      bar.hidden = !picked.length;
+      if (!picked.length) return;
+      const cnt = st => picked.filter(o => o.status === st).length;
+      bar.innerHTML = `<b>已選 ${picked.length} 筆</b>
+        <button class="btn btn-sm" type="button" data-bulk="ship-print">列印出貨單</button>
+        <button class="btn btn-sm" type="button" data-bulk="pick-print">列印揀貨單</button>
+        ${cnt("pending_payment") ? `<button class="btn btn-sm" type="button" data-bulk="paid">確認收款（${cnt("pending_payment")}）</button>` : ""}
+        ${cnt("paid") ? `<button class="btn btn-sm btn-primary" type="button" data-bulk="shipped">標記已出貨（${cnt("paid")}）</button>` : ""}
+        ${cnt("shipped") ? `<button class="btn btn-sm" type="button" data-bulk="completed">標記已完成（${cnt("shipped")}）</button>` : ""}
+        <button class="btn btn-sm btn-ghost" type="button" data-bulk="clear">清除選取</button>`;
+    };
+    document.getElementById("o-list").addEventListener("change", e => {
+      if (e.target.id === "o-all") { rows.forEach(o => e.target.checked ? oSel.add(o.id) : oSel.delete(o.id)); document.getElementById("o-list").innerHTML = ordersTable(rows, oSel); }
+      else if (e.target.classList.contains("o-ck")) { e.target.checked ? oSel.add(e.target.value) : oSel.delete(e.target.value); e.target.closest("tr").classList.toggle("is-sel", e.target.checked); }
+      drawBulk();
+    });
+    document.getElementById("o-bulk").addEventListener("click", async e => {
+      const b = e.target.closest("[data-bulk]"); if (!b) return;
+      const act = b.dataset.bulk, picked = [...oSel].map(id => oSeen[id]).filter(Boolean);
+      if (act === "clear") { oSel.clear(); document.getElementById("o-list").innerHTML = ordersTable(rows, oSel); return drawBulk(); }
+      if (act === "ship-print") return printShipping(picked);
+      if (act === "pick-print") return printPicking(picked);
+      const from = { paid: "pending_payment", shipped: "paid", completed: "shipped" }[act];
+      const target = picked.filter(o => o.status === from);
+      if (act === "shipped") return bulkShipPrompt(target, done);
+      if (!(await confirmBox({ title: `${target.length} 筆訂單改成「${DB.orders.STATUS[act]}」？`, ok: "確定" }))) return;
+      b.disabled = true;
+      try { done(await DB.orders.bulkStatus(target.map(o => o.id), act)); } catch (err) { toast(err.message, "error"); b.disabled = false; }
+    });
+    const done = r => {
+      toast(`已更新 ${r.ok} 筆${r.failed.length ? `，${r.failed.length} 筆沒改（${r.failed.map(f => f.number).join("、")}）` : ""}`, r.failed.length ? "error" : undefined);
+      oSel.clear(); draw();
+    };
     document.getElementById("o-pager").addEventListener("click", e => {
       const b = e.target.closest("[data-page]"); if (!b) return;
       oPage = +b.dataset.page; draw(); document.getElementById("main").scrollIntoView();
@@ -928,7 +1290,9 @@
     shell("orders", `
       <div class="page-head">
         <div class="crumbs"><a href="#admin/orders">訂單</a><span>/</span><span class="mono">${esc(o.number)}</span></div>
-        <div class="actions">${next.map(([s, label, cls]) => `<button class="btn ${cls}" data-next="${s}">${label}</button>`).join("")}</div>
+        <div class="actions"><button class="btn btn-ghost" type="button" id="od-print">列印出貨單</button>
+          ${["paid", "shipped", "completed"].includes(o.status) && (o.refundTotal || 0) < o.total ? `<button class="btn" type="button" id="od-refund">退貨／退款</button>` : ""}
+          ${next.map(([s, label, cls]) => `<button class="btn ${cls}" data-next="${s}">${label}</button>`).join("")}</div>
       </div>
       <div class="grid-2">
         <div style="display:grid;gap:16px">
@@ -945,8 +1309,16 @@
               ${(o.discounts || []).map(d => `<tr><td colspan="4" class="r muted">${esc(d.label)}</td><td class="r num">${d.amount ? "−" + money(d.amount) : "免運"}</td></tr>`).join("")}
               <tr><td colspan="4" class="r muted">運費</td><td class="r num">${o.shippingFee ? money(o.shippingFee) : "免運"}</td></tr>
               <tr><td colspan="4" class="r"><b>總計</b></td><td class="r num"><b>${money(o.total)}</b></td></tr>
+              ${o.refundTotal ? `<tr><td colspan="4" class="r muted">已退款</td><td class="r num">−${money(o.refundTotal)}</td></tr><tr><td colspan="4" class="r"><b>實收</b></td><td class="r num"><b>${money(o.total - o.refundTotal)}</b></td></tr>` : ""}
               </tbody></table></div>
           </section>
+          ${(o.refunds || []).length ? `<section class="panel">
+            <div class="panel-head"><h2>退貨／退款紀錄</h2></div>
+            <div class="table-wrap"><table class="tbl"><thead><tr><th>時間</th><th>退貨</th><th class="r">退款</th><th>原因</th></tr></thead>
+              <tbody>${o.refunds.map(r => `<tr><td class="small">${date(r.at, true)}${r.by ? `<div class="muted">${esc(r.by)}</div>` : ""}</td>
+                <td class="small" style="white-space:normal">${r.items.length ? r.items.map(i => `${esc(i.name)}${i.optionText ? `（${esc(i.optionText)}）` : ""} ×${i.qty}`).join("<br>") + (r.restock ? `<div class="muted">已加回庫存</div>` : "") : "—"}</td>
+                <td class="r num">${money(r.amount)}</td><td class="small" style="white-space:normal">${esc(r.reason)}</td></tr>`).join("")}</tbody></table></div>
+          </section>` : ""}
           <section class="panel">
             <div class="panel-head"><h2>商家備註</h2></div>
             <div class="panel-body">
@@ -982,7 +1354,7 @@
           <section class="panel">
             <div class="panel-head"><h2>訂單紀錄</h2></div>
             <div class="panel-body"><ul class="timeline">
-              ${o.history.slice().reverse().map(h => `<li><div><b>${DB.orders.STATUS[h.status]}</b> <span class="muted num">${date(h.at, true)}</span>${h.note ? `<div class="muted">${esc(h.note)}</div>` : ""}</div></li>`).join("")}
+              ${o.history.slice().reverse().map(h => `<li><div><b>${h.kind === "refund" ? "退款" : DB.orders.STATUS[h.status]}</b> <span class="muted num">${date(h.at, true)}</span>${h.by ? ` <span class="small muted">· ${esc(h.by)}</span>` : ""}${h.note ? `<div class="muted">${esc(h.note)}</div>` : ""}</div></li>`).join("")}
             </ul></div>
           </section>
         </div>
@@ -998,8 +1370,138 @@
       try { await DB.orders.setStatus(o.id, s); toast("訂單已更新為「" + DB.orders.STATUS[s] + "」"); viewOrder(o.id); }
       catch (err) { toast(err.message, "error"); b.disabled = false; }
     }));
+    document.getElementById("od-print").addEventListener("click", () => printShipping([o]));
+    const rfb = document.getElementById("od-refund");
+    if (rfb) rfb.addEventListener("click", () => refundPrompt(o, () => viewOrder(o.id)));
     document.getElementById("od-note-save").addEventListener("click", async () => {
       try { await DB.orders.setNote(o.id, document.getElementById("od-note").value); toast("已儲存備註"); } catch (err) { toast(err.message, "error"); }
+    });
+  }
+
+
+  // 批次出貨：每筆可以各自填物流單號
+  function bulkShipPrompt(list, done) {
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `<form class="modal is-wide" id="bs-form">
+      <h3>${list.length} 筆標記已出貨</h3>
+      <p class="small muted" style="margin:0">物流單號可以留空，之後到訂單頁再補。</p>
+      <div class="bs-list">${list.map(o => `<div class="bs-row"><span class="mono">${esc(o.number)}</span><span class="small">${esc(o.contact.name)}・${esc(o.shipping.methodName)}</span>
+        <input type="text" data-id="${o.id}" placeholder="物流單號（選填）" aria-label="${esc(o.number)} 物流單號"></div>`).join("")}</div>
+      <div class="modal-actions"><button type="button" class="btn" id="bs-cancel">取消</button><button class="btn btn-primary" type="submit">確認出貨</button></div>
+    </form>`;
+    document.body.appendChild(wrap);
+    const first = wrap.querySelector("input"); if (first) first.focus();
+    wrap.querySelector("#bs-cancel").addEventListener("click", () => wrap.remove());
+    wrap.querySelector("#bs-form").addEventListener("submit", async e => {
+      e.preventDefault();
+      const tracking = {}; wrap.querySelectorAll("input[data-id]").forEach(i => { if (i.value.trim()) tracking[i.dataset.id] = i.value.trim(); });
+      const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
+      try { const r = await DB.orders.bulkStatus(list.map(o => o.id), "shipped", tracking); wrap.remove(); done(r); }
+      catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
+  }
+
+  /* ---------- 列印：出貨單（一筆一頁）、揀貨單（彙總要撿的商品） ---------- */
+  function printDocs(title, html) {
+    let box = document.getElementById("print-root");
+    if (!box) { box = document.createElement("div"); box.id = "print-root"; document.body.appendChild(box); }
+    box.innerHTML = html;
+    const old = document.title; document.title = title;
+    document.body.classList.add("printing");
+    const end = () => { document.body.classList.remove("printing"); document.title = old; box.innerHTML = ""; window.removeEventListener("afterprint", end); };
+    window.addEventListener("afterprint", end);
+    setTimeout(() => { window.print(); setTimeout(end, 500); }, 50);
+  }
+  const shipTo = o => o.shipping.storeName ? `${o.shipping.methodName}・${o.shipping.storeName}` : o.shipping.address ? `${o.shipping.methodName}・${o.shipping.address}` : o.shipping.methodName;
+  function printShipping(list, withPrice) {
+    if (!list.length) return;
+    if (withPrice === undefined) {
+      const wrap = document.createElement("div");
+      wrap.className = "modal-backdrop";
+      wrap.innerHTML = `<div class="modal"><h3>列印 ${list.length} 張出貨單</h3>
+        <label class="check"><input type="checkbox" id="ps-price"> 印出單價與金額（送禮的訂單建議不要勾）</label>
+        <div class="modal-actions"><button class="btn" type="button" data-a="no">取消</button><button class="btn btn-primary" type="button" data-a="go">列印</button></div></div>`;
+      document.body.appendChild(wrap);
+      wrap.addEventListener("click", e => {
+        const a = e.target.closest("[data-a]"); if (!a) return;
+        const wp = wrap.querySelector("#ps-price").checked; wrap.remove();
+        if (a.dataset.a === "go") printShipping(list, wp);
+      });
+      return;
+    }
+    const st = DB.settings.get();
+    const cod = o => o.payment.methodId === "cod" && o.payment.status !== "paid";
+    printDocs(`出貨單_${list.length}筆`, list.map(o => `<section class="pdoc">
+      <header class="pd-head"><div><b class="pd-store">${esc(st.name)}</b><div class="pd-small">${esc(st.email || "")}${st.phone ? `・${esc(st.phone)}` : ""}</div></div>
+        <div class="pd-r"><div class="pd-title">出貨單</div><div class="pd-no">${esc(o.number)}</div><div class="pd-small">下單 ${date(o.createdAt, true)}</div></div></header>
+      <div class="pd-grid">
+        <div><div class="pd-label">收件人</div><div class="pd-big">${esc(o.contact.name)}</div><div>${esc(o.contact.phone)}</div></div>
+        <div><div class="pd-label">取貨方式</div><div>${esc(shipTo(o))}</div>${o.shipping.trackingNo ? `<div class="pd-small">物流單號 ${esc(o.shipping.trackingNo)}</div>` : ""}</div>
+        <div><div class="pd-label">付款</div><div>${esc(o.payment.methodName)}</div>${cod(o) ? `<div class="pd-big">取貨收款 ${money(o.total)}</div>` : `<div class="pd-small">${o.payment.status === "paid" ? "已付款" : "未付款"}</div>`}</div>
+      </div>
+      <table class="pd-tbl"><thead><tr><th class="pd-ck">✓</th><th>商品</th><th>規格</th><th>貨號</th><th class="r">數量</th>${withPrice ? `<th class="r">單價</th><th class="r">小計</th>` : ""}</tr></thead>
+        <tbody>${o.items.map(it => `<tr><td class="pd-ck">☐</td><td>${esc(it.name)}</td><td>${esc(it.optionText || "—")}</td><td>${esc(it.sku || "")}</td><td class="r">${it.qty}</td>${withPrice ? `<td class="r">${money(it.price)}</td><td class="r">${money(it.price * it.qty)}</td>` : ""}</tr>`).join("")}</tbody>
+        <tfoot><tr><td></td><td colspan="3">共 ${o.items.reduce((a, i) => a + i.qty, 0)} 件</td><td></td>${withPrice ? `<td class="r">總計</td><td class="r">${money(o.total)}</td>` : ""}</tr></tfoot></table>
+      ${o.note ? `<div class="pd-note"><div class="pd-label">備註</div>${esc(o.note)}</div>` : ""}
+      <footer class="pd-foot">謝謝你的訂購！商品有任何問題，請聯絡 ${esc(st.email || st.name)}</footer>
+    </section>`).join(""));
+  }
+  function printPicking(list) {
+    if (!list.length) return;
+    const map = {};
+    list.forEach(o => o.items.forEach(it => {
+      const k = it.variantId;
+      map[k] = map[k] || { name: it.name, optionText: it.optionText || "", sku: it.sku || "", qty: 0, orders: [] };
+      map[k].qty += it.qty; map[k].orders.push(`${o.number}×${it.qty}`);
+    }));
+    const rows = Object.values(map).sort((a, b) => (a.name + a.optionText).localeCompare(b.name + b.optionText, "zh-Hant"));
+    const st = DB.settings.get();
+    printDocs(`揀貨單_${list.length}筆`, `<section class="pdoc">
+      <header class="pd-head"><div><b class="pd-store">${esc(st.name)}</b><div class="pd-small">列印時間 ${date(new Date().toISOString(), true)}</div></div>
+        <div class="pd-r"><div class="pd-title">揀貨單</div><div class="pd-small">${list.length} 筆訂單・${rows.reduce((a, r) => a + r.qty, 0)} 件・${rows.length} 種規格</div></div></header>
+      <table class="pd-tbl"><thead><tr><th class="pd-ck">✓</th><th>商品</th><th>規格</th><th>貨號</th><th class="r">數量</th><th>訂單</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td class="pd-ck">☐</td><td>${esc(r.name)}</td><td>${esc(r.optionText || "—")}</td><td>${esc(r.sku)}</td><td class="r pd-big">${r.qty}</td><td class="pd-small">${esc(r.orders.join("、"))}</td></tr>`).join("")}</tbody></table>
+      <div class="pd-note"><div class="pd-label">這次的訂單</div>${list.map(o => `${esc(o.number)} ${esc(o.contact.name)}`).join("、")}</div>
+    </section>`);
+  }
+
+  // 退貨／退款
+  function refundPrompt(o, after) {
+    const done = {};
+    (o.refunds || []).forEach(r => r.items.forEach(i => { done[i.variantId] = (done[i.variantId] || 0) + i.qty; }));
+    const left = o.total - (o.refundTotal || 0);
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `<form class="modal is-wide" id="rf-form" novalidate>
+      <h3>退貨／退款</h3>
+      <p class="small muted" style="margin:0">金流還沒串接：錢請你自己退給顧客（轉帳等），這裡是記錄，會算進報表和會員累積消費。</p>
+      <table class="tbl"><thead><tr><th>商品</th><th class="r">買了</th><th class="r">已退</th><th class="r">這次退貨</th></tr></thead>
+        <tbody>${o.items.map(it => { const d = done[it.variantId] || 0; return `<tr><td>${esc(it.name)}${it.optionText ? `<div class="small muted">${esc(it.optionText)}</div>` : ""}</td>
+          <td class="r num">${it.qty}</td><td class="r num">${d}</td>
+          <td class="r"><input type="number" class="rf-q" data-v="${it.variantId}" data-price="${it.price}" min="0" max="${it.qty - d}" step="1" value="0" ${it.qty - d <= 0 ? "disabled" : ""} style="max-width:80px" aria-label="${esc(it.name)} 退貨數量"></td></tr>`; }).join("")}</tbody></table>
+      <label class="check"><input type="checkbox" id="rf-restock" checked> 退回的商品加回庫存（商品完好可以再賣）</label>
+      <div class="grid-form">
+        <div class="field"><label for="rf-amt">退款金額（NT$）</label><input type="number" id="rf-amt" min="0" max="${left}" step="1" value="0"><span class="hint">最多還能退 ${money(left)}；填了退貨數量會自動帶入商品金額，可以再改</span></div>
+        <div class="field"><label for="rf-reason">原因</label><input type="text" id="rf-reason" maxlength="200" placeholder="例如：商品破損、尺寸不合"></div>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn" id="rf-cancel">取消</button><button class="btn btn-danger" type="submit">記錄退款</button></div>
+    </form>`;
+    document.body.appendChild(wrap);
+    const amt = wrap.querySelector("#rf-amt");
+    wrap.querySelectorAll(".rf-q").forEach(i => i.addEventListener("input", () => {
+      const sum = [...wrap.querySelectorAll(".rf-q")].reduce((a, x) => a + (+x.value || 0) * +x.dataset.price, 0);
+      amt.value = Math.min(sum, left);
+    }));
+    wrap.querySelector("#rf-cancel").addEventListener("click", () => wrap.remove());
+    wrap.querySelector("#rf-form").addEventListener("submit", async e => {
+      e.preventDefault();
+      const items = [...wrap.querySelectorAll(".rf-q")].map(i => ({ variantId: i.dataset.v, qty: Math.floor(+i.value || 0) })).filter(i => i.qty > 0);
+      const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
+      try {
+        await DB.orders.refund(o.id, { items, amount: amt.value, restock: wrap.querySelector("#rf-restock").checked, reason: wrap.querySelector("#rf-reason").value });
+        wrap.remove(); toast("已記錄退款"); after();
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
     });
   }
 
@@ -1457,7 +1959,7 @@
     : `<div class="thumb" style="background:${esc(r.color)}">${esc(r.name.slice(0, 1))}</div>`;
   const PO_PILL = { draft: "idle", ordered: "info", partial: "warn", received: "ok", cancelled: "bad" };
   const poPill = s => `<span class="pill ${PO_PILL[s]}">${DB.purchases.STATUS[s]}</span>`;
-  const MOVE_PILL = { sale: "info", cancel: "warn", purchase: "ok", adjust: "warn", edit: "idle", initial: "idle" };
+  const MOVE_PILL = { sale: "info", cancel: "warn", purchase: "ok", adjust: "warn", edit: "idle", initial: "idle", return: "warn" };
   const signed = n => (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n);
 
   /* ---------- 庫存總覽 ---------- */
@@ -1605,7 +2107,7 @@
             <td class="r num"><b style="color:${m.delta > 0 ? "var(--ok)" : "var(--bad)"}">${signed(m.delta)}</b></td>
             <td class="r num">${m.after}</td>
             <td>${ref}</td>
-            <td class="small" style="white-space:normal;min-width:160px">${esc(m.note) || `<span class="muted">—</span>`}</td>
+            <td class="small" style="white-space:normal;min-width:160px">${esc(m.note) || `<span class="muted">—</span>`}${m.by ? `<div class="muted">${esc(m.by)}</div>` : ""}</td>
           </tr>`;
         }).join("")}</tbody></table></div>` : `<div class="empty">沒有異動紀錄</div>`;
     };
@@ -1795,7 +2297,7 @@
           <section class="panel">
             <div class="panel-head"><h2>紀錄</h2></div>
             <div class="panel-body"><ul class="timeline">
-              ${po.history.slice().reverse().map(h => `<li><div><b>${DB.purchases.STATUS[h.status]}</b> <span class="muted num">${date(h.at, true)}</span>${h.note ? `<div class="muted">${esc(h.note)}</div>` : ""}</div></li>`).join("")}
+              ${po.history.slice().reverse().map(h => `<li><div><b>${DB.purchases.STATUS[h.status]}</b> <span class="muted num">${date(h.at, true)}</span>${h.by ? ` <span class="small muted">· ${esc(h.by)}</span>` : ""}${h.note ? `<div class="muted">${esc(h.note)}</div>` : ""}</div></li>`).join("")}
             </ul></div>
           </section>
         </div>
@@ -1884,14 +2386,14 @@
 
   /* 表格整列點擊 */
   document.addEventListener("click", e => {
-    if (e.target.closest("a, button, input, select, textarea, label")) return;
+    if (e.target.closest("a, button, input, select, textarea, label, .ck")) return;
     const tr = e.target.closest("tr[data-href]");
     if (tr) Router.go(tr.dataset.href);
   });
 
   /* ---------- 後台登入（資料庫版） ---------- */
-  window.AdminGate = function (st, parts) {
-    const wrap = (inner, wide) => { root().innerHTML = `<div class="gate"><div class="gate-card${wide ? " is-wide" : ""}">${inner}</div></div>`; };
+  window.AdminGate = function (st, parts, into) {
+    const wrap = (inner, wide) => { if (into) { into.innerHTML = inner; return; } root().innerHTML = `<div class="gate"><div class="gate-card${wide ? " is-wide" : ""}">${inner}</div></div>`; };
     const outBtn = () => document.getElementById("gate-out").addEventListener("click", async () => { await DB.admin.logout(); Router.go("admin"); });
     if (st.state === "nostore") {
       wrap(`
@@ -1932,7 +2434,7 @@
     let mode = parts && parts[1] === "signup" && !forPlatform ? "signup" : "login";
     const draw = msg => {
       wrap(`
-        <h1>${forPlatform ? "平台總控台" : mode === "login" ? "商家登入" : "免費開店"}</h1>
+        ${into ? `<h2>${mode === "login" ? "登入" : "建立帳號"}</h2>` : `<h1>${forPlatform ? "平台總控台" : mode === "login" ? "商家登入" : "免費開店"}</h1>`}
         <p class="muted">${mode === "login" ? "用你的 Email 登入" : "第一步：建立你的帳號（之後可以開好幾家店）"}</p>
         ${msg ? `<div class="notice">${msg}</div>` : ""}
         <form id="gate-form" class="gate-form" novalidate>
@@ -1972,11 +2474,12 @@
 
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
+    if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
     if (!DB.features.inventory && ["stock", "moves", "purchases", "purchase", "suppliers", "supplier"].includes(page)) return phaseTwo("", "進銷存");
     if (!DB.features.tiers && page === "tiers") return phaseTwo("", "會員等級");
     switch (page) {
       case undefined: return viewDashboard();
-      case "products": return viewProducts();
+      case "products": return arg === "sort" ? viewProductSort() : viewProducts();
       case "product": return viewProductEdit(arg);
       case "categories": return viewCategories();
       case "orders": return viewOrders(arg);
@@ -1997,6 +2500,8 @@
       case "supplier": return viewSupplierEdit(arg);
       case "reports": return viewReports();
       case "theme": return viewTheme();
+      case "reviews": return viewReviews(arg);
+      case "staff": return DB.features.staff ? viewStaff() : notFound("離線示範版只有店主一個人", "admin");
       case "stores": return DB.mode === "remote" ? viewStores() : notFound("離線示範版只有一家商店", "admin");
       default: return notFound("找不到這個頁面", "admin");
     }

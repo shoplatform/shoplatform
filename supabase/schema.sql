@@ -1,5 +1,5 @@
 -- =========================================================
--- 開店平台 · 資料庫設定（v0.12：多商家＋上線前防護＋報表＋佈景主題）
+-- 開店平台 · 資料庫設定（v0.16：…＋商品排序、排程上下架、批次匯入、商品評價）
 --
 -- 用法：Supabase 後台左邊「SQL Editor」→ New query →
 --       把這整個檔案貼上 → 按 Run。可以重複執行，不會重複建資料。
@@ -242,6 +242,65 @@ create table if not exists rate_events (
 create index if not exists rate_events_idx on rate_events(bucket, key, at);
 create index if not exists orders_phone_idx on orders(store_id, (contact ->> 'phone'), status);
 
+-- ---------- v0.13：員工帳號與權限 ----------
+-- 店主（owner）什麼都能做；員工（staff）只能做 perms 裡勾選的事
+-- orders 訂單、customers 會員、products 商品、inventory 進銷存、marketing 行銷、reports 報表、settings 設定
+alter table store_members add column if not exists perms text[] not null default '{}';
+create table if not exists store_invites (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  email text not null,
+  perms text[] not null default '{}',
+  token uuid not null unique default gen_random_uuid(),
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '7 days',
+  accepted_at timestamptz
+);
+create index if not exists store_invites_store_idx on store_invites(store_id);
+-- 誰做的：庫存異動記下操作者
+alter table stock_movements add column if not exists by_email text not null default '';
+
+-- ---------- v0.16：商品評價（買過的會員才能評；一筆訂單的一個商品評一次，可以修改） ----------
+create table if not exists reviews (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  product_id uuid not null references products(id) on delete cascade,
+  order_id uuid not null references orders(id) on delete cascade,
+  customer_id uuid references customers(id) on delete set null,
+  display_name text not null default '',
+  rating int not null check (rating between 1 and 5),
+  content text not null default '',
+  status text not null default 'visible' check (status in ('visible', 'pending', 'hidden')),
+  reply text not null default '',
+  reply_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (order_id, product_id)
+);
+create index if not exists reviews_product_idx on reviews(product_id, status, created_at desc);
+create index if not exists reviews_store_idx on reviews(store_id, status, created_at desc);
+
+-- ---------- v0.15：商品排序、排程上下架 ----------
+alter table products add column if not exists sort int not null default 0;          -- 0 = 沒排過（新商品排最前面）
+alter table products add column if not exists publish_at timestamptz;              -- 什麼時候開始上架（空白 = 立刻）
+alter table products add column if not exists unpublish_at timestamptz;            -- 什麼時候自動下架（空白 = 不下架）
+
+-- ---------- v0.14：退貨／退款紀錄 ----------
+create table if not exists order_refunds (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  order_id uuid not null references orders(id) on delete cascade,
+  items jsonb not null default '[]'::jsonb,     -- [{variantId, name, optionText, sku, qty, cost}]
+  amount int not null check (amount >= 0),
+  restock boolean not null default false,
+  reason text not null default '',
+  by_email text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists order_refunds_order_idx on order_refunds(order_id);
+create index if not exists order_refunds_store_idx on order_refunds(store_id, created_at);
+
 -- ---------- v0.11：報表用 ----------
 -- 進貨入庫時記下進價，報表才算得出「進貨花費」；舊資料從備註裡的「進價 NT$…」補上
 alter table stock_movements add column if not exists unit_cost int;
@@ -252,7 +311,7 @@ update stock_movements set unit_cost = replace(substring(note from '進價 NT\$(
 do $$
 declare t text;
 begin
-  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements','suppliers','purchases','platform_admins','platform_settings','platform_billing_log','rate_events'] loop
+  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements','suppliers','purchases','platform_admins','platform_settings','platform_billing_log','rate_events','store_invites','order_refunds','reviews'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon, authenticated', t);
   end loop;
@@ -377,20 +436,57 @@ begin
   end if;
 end $$;
 
+-- 員工權限
+create or replace function _perm_label(p text) returns text language sql immutable as $$
+  select case p when 'orders' then '訂單' when 'customers' then '會員' when 'products' then '商品' when 'inventory' then '進銷存'
+    when 'marketing' then '行銷' when 'reports' then '報表' when 'settings' then '設定' else p end
+$$;
+create or replace function _member_row(p_store uuid) returns store_members language sql stable as $$
+  select * from store_members where store_id = p_store and user_id = auth.uid()
+$$;
+create or replace function _has_perm(p_store uuid, p_perm text) returns boolean language sql stable as $$
+  select coalesce((select role = 'owner' or p_perm = any(perms) from store_members where store_id = p_store and user_id = auth.uid()), false)
+$$;
+-- 看得到成本：店主，或有「進銷存」或「報表」權限的員工
+create or replace function _can_see_cost(p_store uuid) returns boolean language sql stable as $$
+  select _has_perm(p_store, 'inventory') or _has_perm(p_store, 'reports')
+$$;
+create or replace function _require_perm(p_store uuid, p_perm text) returns void language plpgsql stable as $$
+begin
+  perform _require_member(p_store);
+  if not _has_perm(p_store, p_perm) then raise exception '你沒有「%」的權限，請找店主開通', _perm_label(p_perm); end if;
+end $$;
+create or replace function _require_owner(p_store uuid) returns void language plpgsql stable as $$
+begin
+  perform _require_member(p_store);
+  if (_member_row(p_store)).role <> 'owner' then raise exception '只有店主可以管理員工'; end if;
+end $$;
+create or replace function _my_email() returns text language sql stable as $$
+  select coalesce((select email from auth.users where id = auth.uid()), '')
+$$;
+
 create or replace function _log_move(p_store uuid, p_variant uuid, p_delta int, p_type text, p_ref text, p_note text)
 returns void language plpgsql as $$
 begin
-  insert into stock_movements(store_id, product_id, variant_id, name, option_text, sku, delta, after, type, ref, note)
-  select p_store, p.id, v.id, p.name, _option_text(p.options, v.options), v.sku, p_delta, v.stock, p_type, coalesce(p_ref, ''), coalesce(p_note, '')
+  insert into stock_movements(store_id, product_id, variant_id, name, option_text, sku, delta, after, type, ref, note, by_email)
+  select p_store, p.id, v.id, p.name, _option_text(p.options, v.options), v.sku, p_delta, v.stock, p_type, coalesce(p_ref, ''), coalesce(p_note, ''),
+    coalesce((select email from auth.users where id = auth.uid()), '')
   from variants v join products p on p.id = v.product_id where v.id = p_variant;
 end $$;
 
 -- ---------- JSON 形狀（跟網站用的一樣） ----------
+-- 前台看得到：上架中，而且在排程時間內
+create or replace function _product_live(p products) returns boolean language sql stable as $$
+  select p.status = 'active' and (p.publish_at is null or p.publish_at <= now()) and (p.unpublish_at is null or p.unpublish_at > now())
+$$;
+
 create or replace function _product_json(p products, with_cost boolean) returns jsonb language sql stable as $$
   select jsonb_build_object(
     'id', p.id, 'name', p.name, 'description', p.description, 'status', p.status, 'color', p.color,
     'categoryIds', to_jsonb(p.category_ids), 'options', p.options, 'images', p.images,
-    'createdAt', p.created_at,
+    'createdAt', p.created_at, 'sort', p.sort, 'publishAt', p.publish_at, 'unpublishAt', p.unpublish_at, 'live', _product_live(p),
+    'ratingAvg', (select round(avg(r.rating)::numeric, 1) from reviews r where r.product_id = p.id and r.status = 'visible'),
+    'ratingCount', (select count(*) from reviews r where r.product_id = p.id and r.status = 'visible'),
     'variants', coalesce((select jsonb_agg(
         jsonb_build_object('id', v.id, 'sku', v.sku, 'options', v.options, 'price', v.price, 'stock', v.stock)
         || case when with_cost then jsonb_build_object('cost', v.cost) else '{}'::jsonb end
@@ -402,12 +498,21 @@ create or replace function _order_json(o orders) returns jsonb language sql stab
     'id', o.id, 'number', o.number, 'customerId', o.customer_id, 'contact', o.contact, 'items', o.items,
     'subtotal', o.subtotal, 'shippingFee', o.shipping_fee, 'discount', o.discount, 'total', o.total,
     'discounts', o.discounts, 'couponCode', o.coupon_code, 'shipping', o.shipping, 'payment', o.payment,
-    'status', o.status, 'note', o.note, 'history', o.history, 'createdAt', o.created_at)
+    'status', o.status, 'note', o.note, 'history', o.history, 'createdAt', o.created_at,
+    'refundTotal', coalesce((select sum(r.amount) from order_refunds r where r.order_id = o.id), 0)::int,
+    'refunds', coalesce((select jsonb_agg(jsonb_build_object('id', r.id, 'items', r.items, 'amount', r.amount, 'restock', r.restock,
+      'reason', r.reason, 'by', r.by_email, 'at', r.created_at) order by r.created_at) from order_refunds r where r.order_id = o.id), '[]'::jsonb))
+$$;
+
+-- 給沒有成本權限的人看的訂單：拿掉每個品項的成本
+create or replace function _order_json_for(o orders, cost_ok boolean) returns jsonb language sql stable as $$
+  select case when cost_ok then _order_json(o)
+    else jsonb_set(_order_json(o), '{items}', (select coalesce(jsonb_agg(i - 'cost'), '[]'::jsonb) from jsonb_array_elements(o.items) i)) end
 $$;
 
 -- 給顧客看的訂單：拿掉商家備註、內部編號、成本
 create or replace function _order_customer_json(o orders) returns jsonb language sql stable as $$
-  select _order_json(o) - 'note' - 'customerId' - 'id'
+  select _order_json(o) - 'note' - 'customerId' - 'id' - 'refunds'
     || jsonb_build_object('items', (select coalesce(jsonb_agg(i - 'cost'), '[]'::jsonb) from jsonb_array_elements(o.items) i))
     || jsonb_build_object('history', (select coalesce(jsonb_agg(jsonb_build_object('status', h ->> 'status', 'at', h -> 'at')), '[]'::jsonb) from jsonb_array_elements(o.history) h))
 $$;
@@ -435,6 +540,7 @@ create or replace function _public_settings(s stores) returns jsonb language sql
     'email', s.settings ->> 'email', 'phone', s.settings ->> 'phone',
     'freeShippingThreshold', coalesce((s.settings ->> 'freeShippingThreshold')::int, 0),
     'theme', coalesce(s.settings -> 'theme', '{}'::jsonb),
+    'reviews', jsonb_build_object('enabled', coalesce((s.settings #>> '{reviews,enabled}')::boolean, true)),
     'shippingMethods', coalesce((select jsonb_agg(m) from jsonb_array_elements(s.settings -> 'shippingMethods') m where (m ->> 'enabled')::boolean), '[]'::jsonb),
     'paymentMethods', coalesce((select jsonb_agg(m) from jsonb_array_elements(s.settings -> 'paymentMethods') m where (m ->> 'enabled')::boolean), '[]'::jsonb))
 $$;
@@ -446,7 +552,7 @@ declare cfg jsonb; spent int; cur jsonb; nxt jsonb; idx int := 0; i int := 0; t 
 begin
   select member_tiers into cfg from stores where id = p_store;
   if p_customer is null or cfg is null or not coalesce((cfg ->> 'enabled')::boolean, false) then return null; end if;
-  select coalesce(sum(total), 0) into spent from orders
+  select coalesce(sum(total - coalesce((select sum(r.amount) from order_refunds r where r.order_id = orders.id), 0)), 0) into spent from orders
     where customer_id = p_customer and status in ('paid', 'shipped', 'completed')
       and (cfg ->> 'period' <> '12m' or created_at >= now() - interval '365 days');
   for t in select x from jsonb_array_elements(cfg -> 'tiers') x order by (x ->> 'minSpend')::int loop
@@ -493,7 +599,7 @@ begin
            v.sku, v.price, v.stock, v.cost, greatest(0, least(99, (x ->> 'qty')::int)) as qty
     from jsonb_array_elements(p_items) x
     join variants v on v.id = (x ->> 'variantId')::uuid and v.store_id = p_store
-    join products p on p.id = v.product_id and p.status = 'active'
+    join products p on p.id = v.product_id and _product_live(p)
   loop
     continue when it.qty <= 0;
     lines := lines || jsonb_build_object('productId', it.product_id, 'variantId', it.variant_id, 'name', it.name,
@@ -622,7 +728,7 @@ begin
     'closed', false,
     'settings', _public_settings(s),
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
-    'products', coalesce((select jsonb_agg(_product_json(p, false) order by p.created_at desc) from products p where p.store_id = s.id and p.status = 'active'), '[]'::jsonb),
+    'products', coalesce((select jsonb_agg(_product_json(p, false) order by p.sort, p.created_at desc) from products p where p.store_id = s.id and _product_live(p)), '[]'::jsonb),
     'promotions', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'tiers', p.tiers)) from promotions p where p.store_id = s.id and _period_state(p.enabled, p.start_at, p.end_at) = 'active'), '[]'::jsonb),
     'memberTiers', jsonb_build_object('enabled', coalesce((s.member_tiers ->> 'enabled')::boolean, false), 'period', s.member_tiers ->> 'period', 'tiers', s.member_tiers -> 'tiers'));
 end $$;
@@ -780,7 +886,7 @@ end $$;
 
 create or replace function admin_my_stores() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'slug', s.slug, 'name', s.settings ->> 'name', 'role', m.role,
+  select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'slug', s.slug, 'name', s.settings ->> 'name', 'role', m.role, 'perms', to_jsonb(m.perms),
     'billing', _billing_json(s), 'createdAt', s.created_at) order by s.created_at), '[]'::jsonb)
   from store_members m join stores s on s.id = m.store_id where m.user_id = auth.uid()
 $$;
@@ -790,12 +896,19 @@ $$;
 -- 會員的累積消費、各狀態訂單數由伺服器算全部訂單
 create or replace function admin_bootstrap(p_store uuid) returns jsonb
 language plpgsql volatile security definer set search_path = public as $$
-declare s stores;
+declare s stores; me store_members;
+  c_orders boolean; c_customers boolean; c_inventory boolean; c_marketing boolean; c_cost boolean;
 begin
   perform _require_member(p_store);
   perform _expire_unpaid(p_store);
   select * into s from stores where id = p_store;
+  me := _member_row(p_store);
+  -- 員工只拿得到有權限的資料
+  c_orders := _has_perm(p_store, 'orders'); c_customers := _has_perm(p_store, 'customers');
+  c_inventory := _has_perm(p_store, 'inventory'); c_marketing := _has_perm(p_store, 'marketing'); c_cost := _can_see_cost(p_store);
   return jsonb_build_object(
+    'me', jsonb_build_object('role', me.role, 'perms', to_jsonb(me.perms), 'email', _my_email()),
+    'reviewPending', (select count(*) from reviews where store_id = p_store and status = 'pending'),
     'store', jsonb_build_object('id', s.id, 'slug', s.slug, 'createdAt', s.created_at),
     'billing', _billing_json(s),
     'platform', (select jsonb_build_object('platformName', x ->> 'platformName', 'annualFee', (x ->> 'annualFee')::int,
@@ -803,31 +916,32 @@ begin
     'isPlatformAdmin', _is_platform_admin(),
     'settings', s.settings,
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
-    'products', coalesce((select jsonb_agg(_product_json(p, true) order by p.created_at desc) from products p where p.store_id = s.id), '[]'::jsonb),
-    'customers', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'phone', c.phone, 'email', c.email,
-        'createdAt', c.created_at, 'hasAccount', c.user_id is not null, 'registeredAt', c.registered_at)) from customers c where c.store_id = s.id), '[]'::jsonb),
+    'products', coalesce((select jsonb_agg(_product_json(p, c_cost) order by p.sort, p.created_at desc) from products p where p.store_id = s.id), '[]'::jsonb),
+    'customers', case when c_customers then coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'phone', c.phone, 'email', c.email,
+        'createdAt', c.created_at, 'hasAccount', c.user_id is not null, 'registeredAt', c.registered_at)) from customers c where c.store_id = s.id), '[]'::jsonb) else '[]'::jsonb end,
     'memberTiers', s.member_tiers,
-    'suppliers', coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'name', x.name, 'contact', x.contact, 'phone', x.phone, 'email', x.email,
-        'taxId', x.tax_id, 'address', x.address, 'note', x.note, 'createdAt', x.created_at) order by x.name) from suppliers x where x.store_id = s.id), '[]'::jsonb),
-    'purchases', coalesce((select jsonb_agg(jsonb_build_object('id', po.id, 'number', po.number, 'supplierId', po.supplier_id, 'supplierName', po.supplier_name,
+    'suppliers', case when c_inventory then coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'name', x.name, 'contact', x.contact, 'phone', x.phone, 'email', x.email,
+        'taxId', x.tax_id, 'address', x.address, 'note', x.note, 'createdAt', x.created_at) order by x.name) from suppliers x where x.store_id = s.id), '[]'::jsonb) else '[]'::jsonb end,
+    'purchases', case when c_inventory then coalesce((select jsonb_agg(jsonb_build_object('id', po.id, 'number', po.number, 'supplierId', po.supplier_id, 'supplierName', po.supplier_name,
         'status', po.status, 'expectedAt', coalesce(po.expected_at::text, ''), 'note', po.note, 'items', po.items, 'history', po.history,
         'createdAt', po.created_at, 'orderedAt', po.ordered_at, 'receivedAt', po.received_at) order by po.created_at desc)
-        from (select * from purchases where store_id = s.id order by created_at desc limit 500) po), '[]'::jsonb),
-    'movements', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'at', m.at, 'productId', m.product_id, 'variantId', m.variant_id,
-        'name', m.name, 'optionText', m.option_text, 'sku', m.sku, 'delta', m.delta, 'after', m.after, 'type', m.type, 'ref', m.ref, 'note', m.note) order by m.at)
-        from (select * from stock_movements where store_id = s.id order by at desc limit 1000) m), '[]'::jsonb),
-    'orders', coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from (select * from orders where store_id = s.id
-        and (created_at >= now() - interval '120 days' or status in ('pending_payment', 'paid', 'shipped')) order by created_at desc limit 1500) o), '[]'::jsonb),
-    'orderTotal', (select count(*) from orders where store_id = s.id),
-    'statusCounts', coalesce((select jsonb_object_agg(status, n) from (select status, count(*) n from orders where store_id = s.id group by status) x), '{}'::jsonb),
-    'customerStats', coalesce((select jsonb_object_agg(x.customer_id, jsonb_build_object('n', x.n, 'spent', x.spent, 'last', x.last, 'tierSpent', x.tier_spent)) from (
-        select customer_id, count(*) filter (where status <> 'cancelled') n, coalesce(sum(total) filter (where status <> 'cancelled'), 0) spent,
+        from (select * from purchases where store_id = s.id order by created_at desc limit 500) po), '[]'::jsonb) else '[]'::jsonb end,
+    'movements', case when c_inventory then coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'at', m.at, 'productId', m.product_id, 'variantId', m.variant_id,
+        'name', m.name, 'optionText', m.option_text, 'sku', m.sku, 'delta', m.delta, 'after', m.after, 'type', m.type, 'ref', m.ref, 'note', m.note, 'by', m.by_email) order by m.at)
+        from (select * from stock_movements where store_id = s.id order by at desc limit 1000) m), '[]'::jsonb) else '[]'::jsonb end,
+    'orders', case when c_orders then coalesce((select jsonb_agg(_order_json_for(o, c_cost) order by o.created_at desc) from (select * from orders where store_id = s.id
+        and (created_at >= now() - interval '120 days' or status in ('pending_payment', 'paid', 'shipped')) order by created_at desc limit 1500) o), '[]'::jsonb) else '[]'::jsonb end,
+    'orderTotal', case when c_orders then (select count(*) from orders where store_id = s.id) else 0 end,
+    'statusCounts', case when not c_orders then '{}'::jsonb else coalesce((select jsonb_object_agg(status, n) from (select status, count(*) n from orders where store_id = s.id group by status) x), '{}'::jsonb) end,
+    'customerStats', case when not c_customers then '{}'::jsonb else coalesce((select jsonb_object_agg(x.customer_id, jsonb_build_object('n', x.n, 'spent', x.spent, 'last', x.last, 'tierSpent', x.tier_spent)) from (
+        select customer_id, count(*) filter (where status <> 'cancelled') n, coalesce(sum(total - rf) filter (where status <> 'cancelled'), 0) spent,
           max(created_at) filter (where status <> 'cancelled') last,
-          coalesce(sum(total) filter (where status in ('paid', 'shipped', 'completed')
+          coalesce(sum(total - rf) filter (where status in ('paid', 'shipped', 'completed')
             and (s.member_tiers ->> 'period' is distinct from '12m' or created_at >= now() - interval '365 days')), 0) tier_spent
-        from orders where store_id = s.id and customer_id is not null group by customer_id) x), '{}'::jsonb),
-    'coupons', coalesce((select jsonb_agg(_coupon_json(c) order by c.created_at desc) from coupons c where c.store_id = s.id), '[]'::jsonb),
-    'promotions', coalesce((select jsonb_agg(_promotion_json(p) order by p.created_at desc) from promotions p where p.store_id = s.id), '[]'::jsonb),
+        from (select o2.*, coalesce((select sum(r.amount) from order_refunds r where r.order_id = o2.id), 0) rf from orders o2
+              where o2.store_id = s.id and o2.customer_id is not null) oo group by customer_id) x), '{}'::jsonb) end,
+    'coupons', case when not c_marketing then '[]'::jsonb else coalesce((select jsonb_agg(_coupon_json(c) order by c.created_at desc) from coupons c where c.store_id = s.id), '[]'::jsonb) end,
+    'promotions', case when not c_marketing then '[]'::jsonb else coalesce((select jsonb_agg(_promotion_json(p) order by p.created_at desc) from promotions p where p.store_id = s.id), '[]'::jsonb) end,
     'loadedAt', now());
 end $$;
 
@@ -837,7 +951,7 @@ create or replace function admin_search_orders(p_store uuid, p_status text defau
 language plpgsql stable security definer set search_path = public as $$
 declare v_q text := lower(trim(coalesce(p_q, ''))); v_total int; v_rows jsonb;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'orders');
   p_limit := least(greatest(coalesce(p_limit, 50), 0), 20000);
   p_offset := greatest(coalesce(p_offset, 0), 0);
   with f as (select * from orders o where o.store_id = p_store
@@ -846,7 +960,7 @@ begin
     and (p_to is null or (o.created_at at time zone 'Asia/Taipei')::date <= p_to)
     and (v_q = '' or lower(o.number) like '%' || v_q || '%' or lower(o.contact ->> 'name') like '%' || v_q || '%' or (o.contact ->> 'phone') like '%' || v_q || '%'))
   select (select count(*) from f),
-    coalesce((select jsonb_agg(_order_json(x) order by x.created_at desc) from (select * from f order by created_at desc offset p_offset limit p_limit) x), '[]'::jsonb)
+    coalesce((select jsonb_agg(_order_json_for(x, _can_see_cost(p_store)) order by x.created_at desc) from (select * from f order by created_at desc offset p_offset limit p_limit) x), '[]'::jsonb)
   into v_total, v_rows;
   return jsonb_build_object('total', v_total, 'rows', v_rows);
 end $$;
@@ -855,17 +969,17 @@ create or replace function admin_get_order(p_store uuid, p_id text) returns json
 language plpgsql stable security definer set search_path = public as $$
 declare o orders;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'orders');
   select * into o from orders where store_id = p_store and (id::text = p_id or upper(number) = upper(p_id));
   if not found then return null; end if;
-  return _order_json(o);
+  return _order_json_for(o, _can_see_cost(p_store));
 end $$;
 
 create or replace function admin_customer_orders(p_store uuid, p_customer uuid) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
-  return coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from
+  perform _require_perm(p_store, 'customers');
+  return coalesce((select jsonb_agg(_order_json_for(o, _can_see_cost(p_store)) order by o.created_at desc) from
     (select * from orders where store_id = p_store and customer_id = p_customer order by created_at desc limit 500) o), '[]'::jsonb);
 end $$;
 
@@ -893,7 +1007,7 @@ end $$;
 create or replace function admin_save_settings(p_store uuid, p_settings jsonb) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'settings');
   if coalesce(trim(p_settings ->> 'name'), '') = '' then raise exception '請填寫商店名稱'; end if;
   if not exists (select 1 from jsonb_array_elements(p_settings -> 'shippingMethods') m where (m ->> 'enabled')::boolean) then raise exception '至少要開一種取貨方式'; end if;
   if coalesce(p_settings ->> 'autoCancelDays', '0') !~ '^\d{1,2}$' or (p_settings ->> 'autoCancelDays')::int > 30 then raise exception '自動取消天數要 0～30 天'; end if;
@@ -906,7 +1020,7 @@ create or replace function admin_save_category(p_store uuid, p_id uuid, p_name t
 language plpgsql volatile security definer set search_path = public as $$
 declare cid uuid;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'products');
   p_name := trim(coalesce(p_name, ''));
   if p_name = '' then raise exception '請輸入分類名稱'; end if;
   if exists (select 1 from categories where store_id = p_store and name = p_name and id is distinct from p_id) then raise exception '已有同名分類'; end if;
@@ -921,7 +1035,7 @@ end $$;
 create or replace function admin_delete_category(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'products');
   update products set category_ids = array_remove(category_ids, p_id) where store_id = p_store;
   delete from categories where id = p_id and store_id = p_store;
 end $$;
@@ -933,9 +1047,9 @@ language plpgsql volatile security definer set search_path = public as $$
 declare
   pid uuid := nullif(p_product ->> 'id', '')::uuid;
   v jsonb; vid uuid; keep uuid[] := '{}'; ord int := 0; delta int; cur int;
-  cats uuid[]; v_images jsonb;
+  cats uuid[]; v_images jsonb; v_pub timestamptz; v_unpub timestamptz;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'products');
   if coalesce(trim(p_product ->> 'name'), '') = '' then raise exception '請輸入商品名稱'; end if;
   -- 商品圖片：只接受這家店自己上傳到雲端的圖片網址
   select coalesce(jsonb_agg(jsonb_build_object('id', im ->> 'id', 'url', im ->> 'url', 'path', im ->> 'path',
@@ -948,19 +1062,22 @@ begin
     raise exception '圖片網址不正確，請重新上傳';
   end if;
   if jsonb_array_length(coalesce(p_product -> 'variants', '[]'::jsonb)) = 0 then raise exception '至少需要一個規格'; end if;
+  v_pub := nullif(p_product ->> 'publishAt', '')::timestamptz; v_unpub := nullif(p_product ->> 'unpublishAt', '')::timestamptz;
+  if v_pub is not null and v_unpub is not null and v_unpub <= v_pub then raise exception '自動下架時間要晚於上架時間'; end if;
   select coalesce(array_agg(c.id), '{}') into cats from categories c
     where c.store_id = p_store and c.id in (select (x #>> '{}')::uuid from jsonb_array_elements(coalesce(p_product -> 'categoryIds', '[]'::jsonb)) x);
   if pid is null then
-    insert into products(store_id, name, description, status, color, category_ids, options, images)
+    insert into products(store_id, name, description, status, color, category_ids, options, images, publish_at, unpublish_at)
     values (p_store, trim(p_product ->> 'name'), coalesce(p_product ->> 'description', ''),
       case when p_product ->> 'status' = 'active' then 'active' else 'draft' end,
       coalesce(nullif(p_product ->> 'color', ''), (array['#8a9a8e','#b7a38b','#6d7b86','#a58a6f','#4f6b66','#7a5a43','#8c7f99'])[1 + floor(random() * 7)::int]),
-      cats, coalesce(p_product -> 'options', '[]'::jsonb), v_images)
+      cats, coalesce(p_product -> 'options', '[]'::jsonb), v_images, v_pub, v_unpub)
     returning id into pid;
   else
     update products set name = trim(p_product ->> 'name'), description = coalesce(p_product ->> 'description', ''),
       status = case when p_product ->> 'status' = 'active' then 'active' else 'draft' end,
-      category_ids = cats, options = coalesce(p_product -> 'options', '[]'::jsonb), images = v_images, updated_at = now()
+      category_ids = cats, options = coalesce(p_product -> 'options', '[]'::jsonb), images = v_images, updated_at = now(),
+      publish_at = v_pub, unpublish_at = v_unpub
     where id = pid and store_id = p_store;
     if not found then raise exception '找不到這個商品'; end if;
   end if;
@@ -974,14 +1091,14 @@ begin
       select stock into cur from variants where id = vid for update;
       if cur + delta < 0 then raise exception '「%」庫存不能小於 0（目前 %）', coalesce(nullif(v ->> 'sku', ''), '規格'), cur; end if;
       update variants set sku = coalesce(v ->> 'sku', ''), options = coalesce(v -> 'options', '{}'::jsonb),
-        price = (v ->> 'price')::int, cost = greatest(0, coalesce((v ->> 'cost')::int, 0)), stock = stock + delta, sort = ord
+        price = (v ->> 'price')::int, cost = case when _can_see_cost(p_store) then greatest(0, coalesce((v ->> 'cost')::int, 0)) else cost end, stock = stock + delta, sort = ord
       where id = vid;
       if delta <> 0 then perform _log_move(p_store, vid, delta, 'edit', '', '在商品頁直接修改庫存'); end if;
     else
       if delta < 0 then raise exception '庫存需為 0 以上的整數'; end if;
       insert into variants(product_id, store_id, sku, options, price, stock, cost, sort)
       values (pid, p_store, coalesce(v ->> 'sku', ''), coalesce(v -> 'options', '{}'::jsonb), (v ->> 'price')::int, delta,
-              greatest(0, coalesce((v ->> 'cost')::int, 0)), ord)
+              case when _can_see_cost(p_store) then greatest(0, coalesce((v ->> 'cost')::int, 0)) else 0 end, ord)
       returning id into vid;
       if delta > 0 then perform _log_move(p_store, vid, delta, 'initial', '', '新增規格的期初庫存'); end if;
     end if;
@@ -994,7 +1111,7 @@ end $$;
 create or replace function admin_delete_product(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'products');
   delete from products where id = p_id and store_id = p_store;
 end $$;
 
@@ -1003,7 +1120,7 @@ create or replace function admin_set_order_status(p_store uuid, p_order uuid, p_
 returns void language plpgsql volatile security definer set search_path = public as $$
 declare o orders; it jsonb; allowed text[];
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'orders');
   select * into o from orders where id = p_order and store_id = p_store for update;
   if not found then raise exception '找不到這筆訂單'; end if;
   allowed := case o.status
@@ -1023,14 +1140,14 @@ begin
     payment = case when p_status = 'paid' or (p_status = 'completed' and o.payment ->> 'methodId' = 'cod')
                    then jsonb_set(payment, '{status}', '"paid"') else payment end,
     shipping = case when p_tracking is not null then jsonb_set(shipping, '{trackingNo}', to_jsonb(left(trim(p_tracking), 40))) else shipping end,
-    history = history || jsonb_build_array(jsonb_build_object('status', p_status, 'at', now(), 'note', coalesce(p_note, '')))
+    history = history || jsonb_build_array(jsonb_build_object('status', p_status, 'at', now(), 'note', coalesce(p_note, ''), 'by', _my_email()))
   where id = o.id;
 end $$;
 
 create or replace function admin_set_order_note(p_store uuid, p_order uuid, p_note text) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'orders');
   update orders set note = left(coalesce(p_note, ''), 2000) where id = p_order and store_id = p_store;
 end $$;
 
@@ -1044,7 +1161,7 @@ declare
   sd date := nullif(p_coupon ->> 'startAt', '')::date;
   ed date := nullif(p_coupon ->> 'endAt', '')::date;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'marketing');
   if v_code !~ '^[A-Z0-9]{3,20}$' then raise exception '優惠碼要 3～20 個英文字母或數字'; end if;
   if exists (select 1 from coupons where store_id = p_store and coupons.code = v_code and id is distinct from cid) then raise exception '已經有同樣的優惠碼'; end if;
   if coalesce(trim(p_coupon ->> 'name'), '') = '' then raise exception '請填寫優惠券名稱'; end if;
@@ -1077,7 +1194,7 @@ end $$;
 create or replace function admin_delete_coupon(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'marketing');
   delete from coupons where id = p_id and store_id = p_store;
 end $$;
 
@@ -1089,7 +1206,7 @@ declare
   sd date := nullif(p_promo ->> 'startAt', '')::date;
   ed date := nullif(p_promo ->> 'endAt', '')::date;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'marketing');
   if coalesce(trim(p_promo ->> 'name'), '') = '' then raise exception '請填寫活動名稱'; end if;
   select coalesce(jsonb_agg(jsonb_build_object('min', mn, 'off', off) order by mn), '[]'::jsonb) into v_tiers
   from (select greatest(0, floor((t ->> 'min')::numeric))::int as mn, greatest(0, floor((t ->> 'off')::numeric))::int as off
@@ -1113,7 +1230,7 @@ end $$;
 create or replace function admin_delete_promotion(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'marketing');
   delete from promotions where id = p_id and store_id = p_store;
 end $$;
 
@@ -1209,7 +1326,7 @@ create or replace function admin_save_tiers(p_store uuid, p_cfg jsonb) returns v
 language plpgsql volatile security definer set search_path = public as $$
 declare v_tiers jsonb;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'marketing');
   select coalesce(jsonb_agg(jsonb_build_object(
       'id', coalesce(nullif(t ->> 'id', ''), 'tier_' || substr(md5(random()::text), 1, 8)),
       'name', trim(t ->> 'name'),
@@ -1235,7 +1352,7 @@ create or replace function admin_adjust_stock(p_store uuid, p_variant uuid, p_mo
 returns jsonb language plpgsql volatile security definer set search_path = public as $$
 declare cur int; target int; d int;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   select stock into cur from variants where id = p_variant and store_id = p_store for update;
   if not found then raise exception '找不到這個規格'; end if;
   if p_qty is null then raise exception '請填數量'; end if;
@@ -1255,7 +1372,7 @@ language plpgsql volatile security definer set search_path = public as $$
 declare sid uuid := nullif(p_supplier ->> 'id', '')::uuid; v_name text := trim(coalesce(p_supplier ->> 'name', ''));
   v_tax text := trim(coalesce(p_supplier ->> 'taxId', '')); v_email text := trim(coalesce(p_supplier ->> 'email', ''));
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   if v_name = '' then raise exception '請填寫供應商名稱'; end if;
   if v_tax <> '' and v_tax !~ '^\d{8}$' then raise exception '統一編號是 8 位數字'; end if;
   if v_email <> '' and v_email !~ '^[^\s@]+@[^\s@]+\.[^\s@]+$' then raise exception 'Email 格式不正確'; end if;
@@ -1276,7 +1393,7 @@ end $$;
 create or replace function admin_delete_supplier(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   if exists (select 1 from purchases where store_id = p_store and supplier_id = p_id and status in ('ordered', 'partial')) then
     raise exception '這個供應商還有未入庫的進貨單，先處理完再刪除';
   end if;
@@ -1288,7 +1405,7 @@ create or replace function admin_save_purchase(p_store uuid, p_po jsonb) returns
 language plpgsql volatile security definer set search_path = public as $$
 declare pid uuid := nullif(p_po ->> 'id', '')::uuid; po purchases; sp suppliers; v_items jsonb := '[]'::jsonb; it jsonb; r record; seq int;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   if pid is not null then
     select * into po from purchases where id = pid and store_id = p_store for update;
     if not found then raise exception '找不到這張進貨單'; end if;
@@ -1323,7 +1440,7 @@ end $$;
 create or replace function admin_place_purchase(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   update purchases set status = 'ordered', ordered_at = now(), history = history || jsonb_build_array(jsonb_build_object('status', 'ordered', 'at', now()))
   where id = p_id and store_id = p_store and status = 'draft';
   if not found then raise exception '只有草稿可以送出'; end if;
@@ -1335,7 +1452,7 @@ language plpgsql volatile security definer set search_path = public as $$
 declare po purchases; it jsonb; n int; new_items jsonb := '[]'::jsonb; any_in boolean := false; done boolean := true;
   cur_stock int; cur_cost int; parts text[] := '{}';
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   select * into po from purchases where id = p_id and store_id = p_store for update;
   if not found or po.status not in ('ordered', 'partial') then raise exception '這張進貨單現在不能入庫'; end if;
   for it in select * from jsonb_array_elements(po.items) loop
@@ -1375,7 +1492,7 @@ create or replace function admin_cancel_purchase(p_store uuid, p_id uuid, p_note
 language plpgsql volatile security definer set search_path = public as $$
 declare po purchases;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   select * into po from purchases where id = p_id and store_id = p_store for update;
   if not found or po.status not in ('draft', 'ordered', 'partial') then raise exception '這張進貨單不能取消'; end if;
   if po.status = 'partial' then
@@ -1392,7 +1509,7 @@ end $$;
 create or replace function admin_delete_purchase(p_store uuid, p_id uuid) returns void
 language plpgsql volatile security definer set search_path = public as $$
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'inventory');
   delete from purchases where id = p_id and store_id = p_store and status = 'draft';
   if not found then raise exception '只有草稿可以刪除'; end if;
 end $$;
@@ -1407,7 +1524,7 @@ language plpgsql stable security definer set search_path = public as $$
 declare
   v_days int; v_unit text; r jsonb;
 begin
-  perform _require_member(p_store);
+  perform _require_perm(p_store, 'reports');
   if p_from is null or p_to is null then raise exception '請選擇日期區間'; end if;
   if p_to < p_from then raise exception '結束日期不能早於開始日期'; end if;
   v_days := p_to - p_from + 1;
@@ -1449,6 +1566,10 @@ begin
         'newCustomers', (select count(*) from firsts f where f.who in (select who from paid) and f.first_d >= p_from),
         'units', (select coalesce(sum((i ->> 'qty')::int), 0) from its)) from paid),
     'pending', (select jsonb_build_object('orders', count(*), 'amount', coalesce(sum(total), 0)) from o where status = 'pending_payment'),
+    -- 退款：依「退款日期」算；退回庫存的商品，成本加回來
+    'refunds', (select jsonb_build_object('count', count(*), 'amount', coalesce(sum(r.amount), 0),
+        'restockedCost', coalesce(sum((select coalesce(sum((i ->> 'qty')::int * coalesce((i ->> 'cost')::int, 0)), 0) from jsonb_array_elements(r.items) i) * (case when r.restock then 1 else 0 end)), 0))
+      from order_refunds r where r.store_id = p_store and (r.created_at at time zone 'Asia/Taipei')::date between p_from and p_to),
     'cancelled', (select jsonb_build_object('orders', count(*), 'amount', coalesce(sum(total), 0)) from o where status = 'cancelled'),
     'series', (select coalesce(jsonb_agg(jsonb_build_object('date', b.b,
         'revenue', coalesce(x.revenue, 0), 'orders', coalesce(x.n, 0), 'gross', coalesce(x.gross, 0)) order by b.b), '[]'::jsonb)
@@ -1478,6 +1599,332 @@ begin
           from (select nullif(supplier, '') s, sum(delta) u, sum(delta * coalesce(unit_cost, 0)) a from moves group by 1) z), '[]'::jsonb)) from moves)
   ) into r;
   return r;
+end $$;
+
+
+
+
+
+-- =========================================================
+-- v0.16：商品評價
+-- =========================================================
+create or replace function _mask_name(n text) returns text language sql immutable as $$
+  select case when coalesce(trim(n), '') = '' then '顧客' when char_length(trim(n)) = 1 then trim(n) || '*' else left(trim(n), 1) || repeat('*', least(char_length(trim(n)) - 1, 2)) end
+$$;
+create or replace function _review_json(r reviews, with_private boolean) returns jsonb language sql stable as $$
+  select jsonb_build_object('id', r.id, 'productId', r.product_id, 'name', r.display_name, 'rating', r.rating, 'content', r.content,
+    'reply', r.reply, 'replyAt', r.reply_at, 'createdAt', r.created_at, 'updatedAt', r.updated_at)
+  || case when with_private then jsonb_build_object('status', r.status, 'orderNumber', (select number from orders where id = r.order_id),
+       'customerId', r.customer_id, 'customerName', (select name from customers where id = r.customer_id),
+       'productName', (select name from products where id = r.product_id)) else '{}'::jsonb end
+$$;
+
+-- 商品頁：公開的評價（平均、各星等數量、一次 10 則）
+create or replace function shop_reviews(p_slug text, p_product uuid, p_offset int default 0) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s stores;
+begin
+  s := _store_by_slug(p_slug);
+  return jsonb_build_object(
+    'avg', (select round(avg(rating)::numeric, 1) from reviews where product_id = p_product and store_id = s.id and status = 'visible'),
+    'count', (select count(*) from reviews where product_id = p_product and store_id = s.id and status = 'visible'),
+    'dist', (select jsonb_object_agg(g, (select count(*) from reviews where product_id = p_product and store_id = s.id and status = 'visible' and rating = g)) from generate_series(1, 5) g),
+    'items', coalesce((select jsonb_agg(_review_json(r, false) order by r.created_at desc) from
+      (select * from reviews where product_id = p_product and store_id = s.id and status = 'visible' order by created_at desc offset greatest(coalesce(p_offset, 0), 0) limit 10) r), '[]'::jsonb));
+end $$;
+
+-- 會員可以評價的商品：自己的訂單、已出貨或已完成
+create or replace function shop_my_reviewables(p_slug text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s stores; cid uuid;
+begin
+  s := _store_by_slug(p_slug);
+  cid := _member_id(s.id);
+  if cid is null then return '[]'::jsonb; end if;
+  return coalesce((select jsonb_agg(x order by x ->> 'orderedAt' desc) from (
+    select distinct on (o.id, it ->> 'productId') jsonb_build_object('orderNumber', o.number, 'orderedAt', o.created_at, 'productId', it ->> 'productId',
+      'name', it ->> 'name', 'review', (select _review_json(r, false) || jsonb_build_object('status', r.status) from reviews r where r.order_id = o.id and r.product_id::text = it ->> 'productId')) x
+    from orders o, jsonb_array_elements(o.items) it
+    where o.store_id = s.id and o.customer_id = cid and o.status in ('shipped', 'completed')
+      and exists (select 1 from products p where p.id::text = it ->> 'productId')) z), '[]'::jsonb);
+end $$;
+
+create or replace function shop_review_save(p_slug text, p_order text, p_product uuid, p_rating int, p_content text) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; cid uuid; o orders; c customers; r reviews; v_content text := left(trim(coalesce(p_content, '')), 500); auto boolean;
+begin
+  s := _store_by_slug(p_slug);
+  if not coalesce((s.settings #>> '{reviews,enabled}')::boolean, true) then raise exception '這家店目前沒有開放評價'; end if;
+  cid := _member_id(s.id);
+  if cid is null then raise exception '請先登入會員'; end if;
+  select * into o from orders where store_id = s.id and number = upper(trim(p_order)) and customer_id = cid;
+  if not found then raise exception '找不到這筆訂單'; end if;
+  if o.status not in ('shipped', 'completed') then raise exception '商品出貨後才能評價'; end if;
+  if not exists (select 1 from jsonb_array_elements(o.items) it where it ->> 'productId' = p_product::text) then raise exception '這筆訂單沒有這個商品'; end if;
+  if p_rating is null or p_rating not between 1 and 5 then raise exception '請選 1～5 顆星'; end if;
+  perform _rate_hit('review', cid::text, 20, interval '1 day', '今天評價太多次了，明天再試');
+  select * into c from customers where id = cid;
+  auto := coalesce((s.settings #>> '{reviews,autoPublish}')::boolean, true);
+  insert into reviews(store_id, product_id, order_id, customer_id, display_name, rating, content, status)
+    values (s.id, p_product, o.id, cid, _mask_name(c.name), p_rating, v_content, case when auto then 'visible' else 'pending' end)
+  on conflict (order_id, product_id) do update set rating = excluded.rating, content = excluded.content, updated_at = now(),
+    status = case when reviews.status = 'hidden' then 'hidden' when auto then 'visible' else 'pending' end
+  returning * into r;
+  return _review_json(r, false) || jsonb_build_object('status', r.status);
+end $$;
+
+-- 後台：評價列表（狀態、星等篩選，分頁）
+create or replace function admin_reviews(p_store uuid, p_status text default '', p_rating int default null, p_offset int default 0, p_limit int default 50) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _require_perm(p_store, 'products');
+  return jsonb_build_object(
+    'total', (select count(*) from reviews where store_id = p_store and (coalesce(p_status, '') = '' or status = p_status) and (p_rating is null or rating = p_rating)),
+    'counts', (select jsonb_build_object('all', count(*), 'pending', count(*) filter (where status = 'pending'), 'visible', count(*) filter (where status = 'visible'),
+        'hidden', count(*) filter (where status = 'hidden'), 'avg', round(avg(rating) filter (where status = 'visible')::numeric, 1)) from reviews where store_id = p_store),
+    'rows', coalesce((select jsonb_agg(_review_json(r, true) order by r.created_at desc) from
+      (select * from reviews where store_id = p_store and (coalesce(p_status, '') = '' or status = p_status) and (p_rating is null or rating = p_rating)
+       order by created_at desc offset greatest(coalesce(p_offset, 0), 0) limit least(greatest(coalesce(p_limit, 50), 1), 200)) r), '[]'::jsonb));
+end $$;
+
+create or replace function admin_review_set(p_store uuid, p_id uuid, p_status text) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_perm(p_store, 'products');
+  if p_status not in ('visible', 'hidden') then raise exception '狀態不正確'; end if;
+  update reviews set status = p_status where id = p_id and store_id = p_store;
+  if not found then raise exception '找不到這則評價'; end if;
+end $$;
+
+create or replace function admin_review_reply(p_store uuid, p_id uuid, p_reply text) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_perm(p_store, 'products');
+  if char_length(coalesce(p_reply, '')) > 500 then raise exception '回覆最多 500 個字'; end if;
+  update reviews set reply = trim(coalesce(p_reply, '')), reply_at = case when trim(coalesce(p_reply, '')) = '' then null else now() end
+    where id = p_id and store_id = p_store;
+  if not found then raise exception '找不到這則評價'; end if;
+end $$;
+
+-- =========================================================
+-- v0.15：商品管理（排序、複製、批次匯入）
+-- =========================================================
+-- 自訂排序：照傳進來的順序排 1、2、3…
+create or replace function admin_sort_products(p_store uuid, p_ids uuid[]) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare i int := 0; x uuid;
+begin
+  perform _require_perm(p_store, 'products');
+  foreach x in array coalesce(p_ids, '{}') loop
+    i := i + 1;
+    update products set sort = i where id = x and store_id = p_store;
+  end loop;
+end $$;
+
+-- 複製商品：存成草稿、庫存 0、貨號清空、不複製圖片（圖片檔案跟原商品共用會互相影響）
+create or replace function admin_duplicate_product(p_store uuid, p_id uuid) returns uuid
+language plpgsql volatile security definer set search_path = public as $$
+declare p products; nid uuid;
+begin
+  perform _require_perm(p_store, 'products');
+  select * into p from products where id = p_id and store_id = p_store;
+  if not found then raise exception '找不到這個商品'; end if;
+  insert into products(store_id, name, description, status, color, category_ids, options, images, sort)
+    values (p_store, left(p.name || '（複製）', 60), p.description, 'draft', p.color, p.category_ids, p.options, '[]'::jsonb, p.sort)
+    returning id into nid;
+  insert into variants(product_id, store_id, sku, options, price, stock, cost, sort)
+    select nid, p_store, '', options, price, 0, cost, sort from variants where product_id = p.id;
+  return nid;
+end $$;
+
+-- 批次匯入：一次存很多個商品，全部成功才生效（有一個錯就全部不存，並說是哪一個）
+create or replace function admin_save_products_bulk(p_store uuid, p_products jsonb) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare x jsonb; i int := 0; ids jsonb := '[]'::jsonb;
+begin
+  perform _require_perm(p_store, 'products');
+  if jsonb_typeof(p_products) <> 'array' or jsonb_array_length(p_products) = 0 then raise exception '沒有要匯入的商品'; end if;
+  if jsonb_array_length(p_products) > 500 then raise exception '一次最多 500 個商品'; end if;
+  for x in select * from jsonb_array_elements(p_products) loop
+    i := i + 1;
+    begin
+      ids := ids || to_jsonb(admin_save_product(p_store, x));
+    exception when others then
+      raise exception '%', format('第 %s 個商品「%s」：%s', i, coalesce(x ->> 'name', ''), sqlerrm);
+    end;
+  end loop;
+  return ids;
+end $$;
+
+-- =========================================================
+-- v0.14：批次改狀態、退貨／退款
+-- =========================================================
+-- 一次改很多筆訂單（例如一起出貨）；改不了的會列出原因，其他照樣完成
+create or replace function admin_bulk_set_status(p_store uuid, p_orders uuid[], p_status text, p_tracking jsonb default '{}'::jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = public as $$
+declare oid uuid; n int := 0; failed jsonb := '[]'::jsonb;
+begin
+  perform _require_perm(p_store, 'orders');
+  if p_status not in ('paid', 'shipped', 'completed', 'cancelled') then raise exception '狀態不正確'; end if;
+  if coalesce(cardinality(p_orders), 0) = 0 then raise exception '請先勾選訂單'; end if;
+  if cardinality(p_orders) > 200 then raise exception '一次最多 200 筆'; end if;
+  foreach oid in array p_orders loop
+    begin
+      perform admin_set_order_status(p_store, oid, p_status, nullif(trim(coalesce(p_tracking ->> oid::text, '')), ''), null);
+      n := n + 1;
+    exception when others then
+      failed := failed || jsonb_build_object('id', oid, 'number', (select number from orders where id = oid and store_id = p_store), 'reason', sqlerrm);
+    end;
+  end loop;
+  return jsonb_build_object('ok', n, 'failed', failed);
+end $$;
+
+-- 退貨／退款：可以只退部分商品、部分金額；選擇要不要把商品加回庫存
+create or replace function admin_refund_order(p_store uuid, p_order uuid, p_items jsonb, p_amount int, p_restock boolean, p_reason text)
+returns jsonb language plpgsql volatile security definer set search_path = public as $$
+declare o orders; it jsonb; line jsonb; want int; done_qty int; items_out jsonb := '[]'::jsonb; refunded int; r order_refunds;
+begin
+  perform _require_perm(p_store, 'orders');
+  select * into o from orders where id = p_order and store_id = p_store for update;
+  if not found then raise exception '找不到這筆訂單'; end if;
+  if o.status not in ('paid', 'shipped', 'completed') then raise exception '只有已付款的訂單可以退款（待付款的請直接取消）'; end if;
+  if coalesce(trim(p_reason), '') = '' then raise exception '請填寫退款原因'; end if;
+  select coalesce(sum(amount), 0) into refunded from order_refunds where order_id = o.id;
+  if p_amount is null or p_amount < 0 then raise exception '退款金額不正確'; end if;
+  if p_amount > o.total - refunded then raise exception '%', '最多還能退 ' || _money(o.total - refunded); end if;
+  for it in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) loop
+    want := coalesce(floor((it ->> 'qty')::numeric)::int, 0);
+    if want <= 0 then continue; end if;
+    select l into line from jsonb_array_elements(o.items) l where l ->> 'variantId' = it ->> 'variantId';
+    if line is null then raise exception '這筆訂單沒有這個商品'; end if;
+    select coalesce(sum((x ->> 'qty')::int), 0) into done_qty from order_refunds rr, jsonb_array_elements(rr.items) x
+      where rr.order_id = o.id and x ->> 'variantId' = it ->> 'variantId';
+    if want > (line ->> 'qty')::int - done_qty then
+      raise exception '%', format('「%s」最多還能退 %s 件', line ->> 'name', (line ->> 'qty')::int - done_qty);
+    end if;
+    items_out := items_out || jsonb_build_object('variantId', line ->> 'variantId', 'productId', line ->> 'productId', 'name', line ->> 'name',
+      'optionText', coalesce(line ->> 'optionText', ''), 'sku', coalesce(line ->> 'sku', ''), 'qty', want, 'price', (line ->> 'price')::int, 'cost', coalesce((line ->> 'cost')::int, 0));
+    if p_restock then
+      update variants set stock = stock + want where id = (line ->> 'variantId')::uuid and store_id = p_store;
+      if found then perform _log_move(p_store, (line ->> 'variantId')::uuid, want, 'return', o.number, '退貨入庫：' || trim(p_reason)); end if;
+    end if;
+  end loop;
+  if p_amount = 0 and jsonb_array_length(items_out) = 0 then raise exception '請填退款金額或退貨數量'; end if;
+  insert into order_refunds(store_id, order_id, items, amount, restock, reason, by_email)
+    values (p_store, o.id, items_out, p_amount, coalesce(p_restock, false) and jsonb_array_length(items_out) > 0, left(trim(p_reason), 200), _my_email())
+    returning * into r;
+  update orders set history = history || jsonb_build_array(jsonb_build_object('status', o.status, 'kind', 'refund', 'at', now(), 'by', _my_email(),
+    'note', '退款 ' || _money(p_amount) || case when jsonb_array_length(items_out) > 0 then '，退貨 ' ||
+      (select string_agg((x ->> 'name') || ' ×' || (x ->> 'qty'), '、') from jsonb_array_elements(items_out) x) ||
+      case when r.restock then '（已加回庫存）' else '' end else '' end || '：' || trim(p_reason)))
+    where id = o.id;
+  return jsonb_build_object('id', r.id, 'amount', r.amount);
+end $$;
+
+-- =========================================================
+-- v0.13：員工帳號（店主邀請 → 對方用同一個 Email 登入 → 加入）
+-- =========================================================
+create or replace function _clean_perms(p text[]) returns text[] language sql immutable as $$
+  select coalesce(array_agg(distinct x order by x), '{}') from unnest(coalesce(p, '{}')) x
+  where x in ('orders', 'customers', 'products', 'inventory', 'marketing', 'reports', 'settings')
+$$;
+
+create or replace function admin_staff_list(p_store uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _require_owner(p_store);
+  return jsonb_build_object(
+    'members', coalesce((select jsonb_agg(jsonb_build_object('userId', m.user_id, 'email', u.email, 'role', m.role, 'perms', to_jsonb(m.perms),
+        'createdAt', m.created_at, 'isMe', m.user_id = auth.uid()) order by m.role desc, m.created_at)
+      from store_members m join auth.users u on u.id = m.user_id where m.store_id = p_store), '[]'::jsonb),
+    'invites', coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'email', i.email, 'perms', to_jsonb(i.perms), 'token', i.token,
+        'createdAt', i.created_at, 'expiresAt', i.expires_at, 'expired', i.expires_at < now()) order by i.created_at desc)
+      from store_invites i where i.store_id = p_store and i.accepted_at is null), '[]'::jsonb));
+end $$;
+
+create or replace function admin_invite_staff(p_store uuid, p_email text, p_perms text[]) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare v_email text := lower(trim(coalesce(p_email, ''))); v_perms text[] := _clean_perms(p_perms); inv store_invites;
+begin
+  perform _require_owner(p_store);
+  if v_email !~ '^[^\s@]+@[^\s@]+\.[^\s@]+$' then raise exception 'Email 格式不正確'; end if;
+  if cardinality(v_perms) = 0 then raise exception '至少要勾一項權限'; end if;
+  if exists (select 1 from store_members m join auth.users u on u.id = m.user_id where m.store_id = p_store and lower(u.email) = v_email) then
+    raise exception '這個 Email 已經是這家店的成員'; end if;
+  if (select count(*) from store_members where store_id = p_store) + (select count(*) from store_invites where store_id = p_store and accepted_at is null and expires_at > now()) >= 20 then
+    raise exception '每家店最多 20 位成員（含邀請中）'; end if;
+  perform _rate_hit('invite', p_store::text, 30, interval '1 day', '今天邀請太多次了，明天再試');
+  delete from store_invites where store_id = p_store and lower(email) = v_email and accepted_at is null;
+  insert into store_invites(store_id, email, perms, created_by) values (p_store, v_email, v_perms, auth.uid()) returning * into inv;
+  return jsonb_build_object('id', inv.id, 'token', inv.token, 'expiresAt', inv.expires_at);
+end $$;
+
+create or replace function admin_cancel_invite(p_store uuid, p_id uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_owner(p_store);
+  delete from store_invites where id = p_id and store_id = p_store and accepted_at is null;
+end $$;
+
+create or replace function admin_update_staff(p_store uuid, p_user uuid, p_perms text[]) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare v_perms text[] := _clean_perms(p_perms);
+begin
+  perform _require_owner(p_store);
+  if cardinality(v_perms) = 0 then raise exception '至少要勾一項權限（要移除請按「移除」）'; end if;
+  update store_members set perms = v_perms where store_id = p_store and user_id = p_user and role = 'staff';
+  if not found then raise exception '找不到這位員工'; end if;
+end $$;
+
+create or replace function admin_remove_staff(p_store uuid, p_user uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_owner(p_store);
+  delete from store_members where store_id = p_store and user_id = p_user and role = 'staff';
+  if not found then raise exception '找不到這位員工（店主不能移除）'; end if;
+end $$;
+
+-- 員工自己離開這家店
+create or replace function admin_leave_store(p_store uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_member(p_store);
+  if (_member_row(p_store)).role = 'owner' then raise exception '店主不能離開自己的商店'; end if;
+  delete from store_members where store_id = p_store and user_id = auth.uid();
+end $$;
+
+-- 邀請連結資訊（打開連結時顯示是哪一家店；Email 只露出一部分）
+create or replace function admin_invite_info(p_token uuid) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare inv store_invites; s stores;
+begin
+  perform _rate_hit('invite-info', coalesce(_client_ip(), ''), 60, interval '10 minutes', '查詢太頻繁，請稍後再試');
+  select * into inv from store_invites where token = p_token;
+  if not found then return null; end if;
+  select * into s from stores where id = inv.store_id;
+  return jsonb_build_object('storeName', s.settings ->> 'name', 'storeSlug', s.slug,
+    'email', left(inv.email, 2) || '***' || substring(inv.email from position('@' in inv.email)),
+    'perms', to_jsonb(inv.perms), 'expired', inv.expires_at < now(), 'accepted', inv.accepted_at is not null,
+    'emailMatches', auth.uid() is not null and lower(_my_email()) = lower(inv.email));
+end $$;
+
+create or replace function admin_accept_invite(p_token uuid) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare inv store_invites; s stores; v_email text; confirmed timestamptz;
+begin
+  if auth.uid() is null then raise exception '請先登入'; end if;
+  select * into inv from store_invites where token = p_token for update;
+  if not found then raise exception '邀請連結不正確'; end if;
+  if inv.accepted_at is not null then raise exception '這個邀請已經用過了'; end if;
+  if inv.expires_at < now() then raise exception '邀請已過期，請店主重新邀請'; end if;
+  select email, email_confirmed_at into v_email, confirmed from auth.users where id = auth.uid();
+  if lower(v_email) <> lower(inv.email) then raise exception '這個邀請是給另一個 Email 的，請用被邀請的 Email 登入'; end if;
+  if confirmed is null then raise exception '請先完成 Email 驗證'; end if;
+  insert into store_members(store_id, user_id, role, perms) values (inv.store_id, auth.uid(), 'staff', inv.perms)
+    on conflict (store_id, user_id) do nothing;
+  update store_invites set accepted_at = now() where id = inv.id;
+  select * into s from stores where id = inv.store_id;
+  return jsonb_build_object('storeId', s.id, 'slug', s.slug, 'name', s.settings ->> 'name');
 end $$;
 
 -- =========================================================
@@ -1815,7 +2262,7 @@ create policy "product images: members delete" on storage.objects for delete to 
 -- ---------- 權限：只開放該開的函式 ----------
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function shop_catalog(text), shop_quote(text, jsonb, text, text, text), shop_place_order(text, jsonb),
-  shop_order_lookup(text, text, text), shop_cancel_order(text, text, text), platform_public() to anon, authenticated;
+  shop_order_lookup(text, text, text), shop_cancel_order(text, text, text), platform_public(), admin_invite_info(uuid), shop_reviews(text, uuid, int) to anon, authenticated;
 grant execute on function admin_my_stores(), admin_bootstrap(uuid), admin_save_settings(uuid, jsonb),
   admin_save_category(uuid, uuid, text), admin_delete_category(uuid, uuid),
   admin_save_product(uuid, jsonb), admin_delete_product(uuid, uuid),
@@ -1830,7 +2277,10 @@ grant execute on function admin_my_stores(), admin_bootstrap(uuid), admin_save_s
   shop_my_orders(text), shop_member_cancel(text, text), is_store_member(text),
   admin_slug_available(text), admin_create_store(text, text),
   admin_search_orders(uuid, text, text, date, date, int, int), admin_get_order(uuid, text), admin_customer_orders(uuid, uuid),
-  admin_report(uuid, date, date),
+  admin_report(uuid, date, date), admin_reviews(uuid, text, int, int, int), admin_review_set(uuid, uuid, text), admin_review_reply(uuid, uuid, text),
+  shop_my_reviewables(text), shop_review_save(text, text, uuid, int, text), admin_sort_products(uuid, uuid[]), admin_duplicate_product(uuid, uuid), admin_save_products_bulk(uuid, jsonb), admin_bulk_set_status(uuid, uuid[], text, jsonb), admin_refund_order(uuid, uuid, jsonb, int, boolean, text),
+  admin_staff_list(uuid), admin_invite_staff(uuid, text, text[]), admin_cancel_invite(uuid, uuid), admin_update_staff(uuid, uuid, text[]),
+  admin_remove_staff(uuid, uuid), admin_leave_store(uuid), admin_accept_invite(uuid),
   platform_me(), platform_overview(), platform_record_payment(uuid, int, int, text), platform_set_until(uuid, date, text),
   platform_set_plan(uuid, text, text), platform_set_suspended(uuid, boolean, text), platform_save_note(uuid, text),
   platform_save_settings(jsonb) to authenticated;
@@ -1861,4 +2311,4 @@ end $$;
 -- 頻率限制紀錄只需要保留一天
 delete from rate_events where at < now() - interval '1 day';
 
-select '完成：資料庫是 v0.12 版' as result;
+select '完成：資料庫是 v0.16 版' as result;

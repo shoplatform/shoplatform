@@ -182,13 +182,26 @@
 
   /* ---------- 商品 ---------- */
   const products = {
-    list({ q = "", categoryId = "", status = "" } = {}) {
+    // live：只要前台看得到的（上架中、在排程時間內）
+    list({ q = "", categoryId = "", status = "", live = false } = {}) {
       q = q.trim().toLowerCase();
       return clone(S().products.filter(p =>
         (!q || p.name.toLowerCase().includes(q) || p.variants.some(v => v.sku.toLowerCase().includes(q))) &&
         (!categoryId || p.categoryIds.includes(categoryId)) &&
-        (!status || p.status === status)
-      ).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        (!status || p.status === status) && (!live || products.isLive(p))
+      ).sort((a, b) => (a.sort || 0) - (b.sort || 0) || b.createdAt.localeCompare(a.createdAt)));
+    },
+    // 排程：上架中，而且現在在「上架時間～自動下架時間」之間
+    isLive(p) {
+      if (!p || p.status !== "active") return false;
+      const now = Date.now();
+      return (!p.publishAt || new Date(p.publishAt).getTime() <= now) && (!p.unpublishAt || new Date(p.unpublishAt).getTime() > now);
+    },
+    schedule(p) {   // 後台顯示用：live／scheduled（還沒到上架時間）／ended（已自動下架）／draft
+      if (p.status !== "active") return "draft";
+      if (p.publishAt && new Date(p.publishAt).getTime() > Date.now()) return "scheduled";
+      if (p.unpublishAt && new Date(p.unpublishAt).getTime() <= Date.now()) return "ended";
+      return "live";
     },
     get: id => { const p = S().products.find(x => x.id === id); return p ? clone(p) : null; },
     save(input) {
@@ -231,6 +244,27 @@
       notify(); return clone(data);
     },
     remove(id) { S().products = S().products.filter(p => p.id !== id); commit(); },
+    async sortOrder(ids) { ids.forEach((id, i) => { const p = S().products.find(x => x.id === id); if (p) p.sort = i + 1; }); commit(); },
+    async duplicate(id) {
+      const p = S().products.find(x => x.id === id);
+      if (!p) throw new Error("找不到這個商品");
+      const c = clone(p);
+      c.id = uid("p"); c.name = (p.name + "（複製）").slice(0, 60); c.status = "draft"; c.images = []; c.createdAt = new Date().toISOString();
+      c.publishAt = null; c.unpublishAt = null;
+      c.variants = c.variants.map(v => Object.assign(v, { id: uid("v"), sku: "", stock: 0 }));
+      S().products.push(c); commit();
+      return c.id;
+    },
+    async saveMany(list) {
+      const before = JSON.stringify(S().products), movesBefore = S().movements.length;
+      try {
+        list.forEach((p, i) => {
+          try { products.save(Object.assign({}, p, { id: p.id || undefined, variants: p.variants.map(v => Object.assign({}, v, { id: v.id || uid("v") })) })); }
+          catch (e) { throw new Error(`第 ${i + 1} 個商品「${p.name}」：${e.message}`); }
+        });
+      } catch (e) { S().products = JSON.parse(before); S().movements.length = movesBefore; commit(); throw e; }
+      return list.length;
+    },
     cover: p => (p.images && p.images[0] ? p.images[0].url : ""),
     totalStock: p => p.variants.reduce((s, v) => s + v.stock, 0),
     priceRange(p) {
@@ -253,7 +287,7 @@
    *       adjust 盤點／手動調整｜edit 在商品頁直接改｜initial 新規格期初庫存
    * 呼叫前要先改好 v.stock，after 記的是改完的數字。
    */
-  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存" };
+  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存", return: "退貨入庫" };
   function logMove(p, v, delta, type, ref, note) {
     S().movements.push({
       id: uid("mv"), at: new Date().toISOString(), productId: p.id, variantId: v.id,
@@ -613,7 +647,7 @@
       return state.cart.map(line => {
         const p = S().products.find(x => x.id === line.productId);
         const v = p && p.variants.find(x => x.id === line.variantId);
-        if (!p || !v || p.status !== "active") return null;
+        if (!p || !v || !products.isLive(p)) return null;
         return {
           productId: p.id, variantId: v.id, name: p.name, color: p.color, image: products.cover(p),
           optionText: Object.values(v.options).join(" / "),
@@ -975,6 +1009,46 @@
       commit();
     },
     setNote(id, note) { const o = S().orders.find(x => x.id === id); if (o) { o.note = note; commit(); } },
+    async bulkStatus(ids, status, tracking) {
+      const NEXT = { pending_payment: ["paid", "cancelled"], paid: ["shipped", "cancelled"], shipped: ["completed"] };
+      let ok = 0; const failed = [];
+      (ids || []).forEach(id => {
+        const o = S().orders.find(x => x.id === id);
+        if (!o) return;
+        if (!(NEXT[o.status] || []).includes(status)) return failed.push({ id, number: o.number, reason: "這筆訂單現在不能改成這個狀態" });
+        orders.setStatus(id, status, tracking && tracking[id] ? { trackingNo: tracking[id] } : {}); ok++;
+      });
+      return { ok, failed };
+    },
+    async refund(orderId, { items, amount, restock, reason }) {
+      const o = S().orders.find(x => x.id === orderId);
+      if (!o) throw new Error("找不到這筆訂單");
+      if (!["paid", "shipped", "completed"].includes(o.status)) throw new Error("只有已付款的訂單可以退款（待付款的請直接取消）");
+      reason = String(reason || "").trim(); amount = Math.round(+amount || 0);
+      if (!reason) throw new Error("請填寫退款原因");
+      o.refunds = o.refunds || [];
+      const refunded = o.refunds.reduce((a, r) => a + r.amount, 0);
+      if (amount < 0) throw new Error("退款金額不正確");
+      if (amount > o.total - refunded) throw new Error("最多還能退 " + money0(o.total - refunded));
+      const out = [];
+      (items || []).filter(i => (+i.qty || 0) > 0).forEach(i => {
+        const line = o.items.find(l => l.variantId === i.variantId);
+        if (!line) throw new Error("這筆訂單沒有這個商品");
+        const done = o.refunds.reduce((a, r) => a + r.items.filter(x => x.variantId === i.variantId).reduce((b, x) => b + x.qty, 0), 0);
+        if (+i.qty > line.qty - done) throw new Error(`「${line.name}」最多還能退 ${line.qty - done} 件`);
+        out.push({ variantId: line.variantId, productId: line.productId, name: line.name, optionText: line.optionText || "", sku: line.sku || "", qty: +i.qty, price: line.price, cost: line.cost || 0 });
+      });
+      if (!amount && !out.length) throw new Error("請填退款金額或退貨數量");
+      if (restock) out.forEach(x => {
+        const p = S().products.find(pp => pp.id === x.productId), v = p && p.variants.find(vv => vv.id === x.variantId);
+        if (v) { v.stock += x.qty; logMove(p, v, x.qty, "return", o.number, "退貨入庫：" + reason); }
+      });
+      const rf = { id: uid("rf"), items: out, amount, restock: !!restock && out.length > 0, reason, by: "", at: new Date().toISOString() };
+      o.refunds.push(rf); o.refundTotal = refunded + amount;
+      o.history.push({ status: o.status, kind: "refund", at: rf.at, note: `退款 ${money0(amount)}${out.length ? "，退貨 " + out.map(x => x.name + " ×" + x.qty).join("、") + (rf.restock ? "（已加回庫存）" : "") : ""}：${reason}` });
+      commit();
+      return clone(rf);
+    },
 
     /* ----- 消費者端 ----- */
     /* 不用登入的訂單查詢：訂單編號＋下單手機都對才給看 */
@@ -1121,6 +1195,8 @@
           customers: whos.length, newCustomers: whos.filter(k => firsts[k] >= from).length, units: sum(lines, i => i.qty) },
         pending: { orders: o.filter(x => x.status === "pending_payment").length, amount: sum(o.filter(x => x.status === "pending_payment"), x => x.total) },
         cancelled: { orders: o.filter(x => x.status === "cancelled").length, amount: sum(o.filter(x => x.status === "cancelled"), x => x.total) },
+        refunds: (() => { const rs = all.flatMap(x => x.refunds || []).filter(r => ymdLocal(r.at) >= from && ymdLocal(r.at) <= to);
+          return { count: rs.length, amount: sum(rs, r => r.amount), restockedCost: sum(rs.filter(r => r.restock), r => sum(r.items, i => i.qty * (i.cost || 0))) }; })(),
         series, products, variants, payments, shippings, discounts,
         purchases: { units: sum(moves, m => m.delta), amount: sum(moves, m => m.delta * m.cost),
           bySupplier: group(moves, m => m.supplier, (a, m) => { a = a || { name: m.supplier || null, units: 0, amount: 0 }; a.units += m.delta; a.amount += m.delta * m.cost; return a; }).sort((a, b) => b.amount - a.amount) },
@@ -1128,16 +1204,75 @@
     },
   };
 
+  /* ---------- 商品評價（離線示範版：存在瀏覽器） ---------- */
+  const maskName = n => { n = String(n || "").trim(); return !n ? "顧客" : n.length === 1 ? n + "*" : n[0] + "*".repeat(Math.min(n.length - 1, 2)); };
+  const RV = () => (S().reviews = S().reviews || []);
+  const pubReview = r => ({ id: r.id, productId: r.productId, name: r.name, rating: r.rating, content: r.content, reply: r.reply || "", replyAt: r.replyAt || null, createdAt: r.createdAt, updatedAt: r.updatedAt });
+  const reviews = {
+    settings: () => Object.assign({ enabled: true, autoPublish: true }, S().settings.reviews || {}),
+    summary(p) {
+      const vs = RV().filter(r => r.productId === (p && p.id) && r.status === "visible");
+      return { avg: vs.length ? Math.round(vs.reduce((a, r) => a + r.rating, 0) / vs.length * 10) / 10 : null, count: vs.length };
+    },
+    async forProduct(productId, offset) {
+      const vs = RV().filter(r => r.productId === productId && r.status === "visible").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const dist = {}; [1, 2, 3, 4, 5].forEach(g => { dist[g] = vs.filter(r => r.rating === g).length; });
+      return clone({ avg: reviews.summary({ id: productId }).avg, count: vs.length, dist, items: vs.slice(offset || 0, (offset || 0) + 10).map(pubReview) });
+    },
+    async mine() {
+      const c = me(); if (!c) return [];
+      const out = [];
+      S().orders.filter(o => o.customerId === c.id && ["shipped", "completed"].includes(o.status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).forEach(o => {
+        const seen = new Set();
+        o.items.forEach(it => {
+          if (seen.has(it.productId) || !S().products.some(p => p.id === it.productId)) return;
+          seen.add(it.productId);
+          const r = RV().find(x => x.orderId === o.id && x.productId === it.productId);
+          out.push({ orderNumber: o.number, orderedAt: o.createdAt, productId: it.productId, name: it.name, review: r ? Object.assign(pubReview(r), { status: r.status }) : null });
+        });
+      });
+      return clone(out);
+    },
+    async save({ orderNumber, productId, rating, content }) {
+      if (!reviews.settings().enabled) throw new Error("這家店目前沒有開放評價");
+      const c = me(); if (!c) throw new Error("請先登入會員");
+      const o = S().orders.find(x => x.number === orderNumber && x.customerId === c.id);
+      if (!o) throw new Error("找不到這筆訂單");
+      if (!["shipped", "completed"].includes(o.status)) throw new Error("商品出貨後才能評價");
+      if (!o.items.some(it => it.productId === productId)) throw new Error("這筆訂單沒有這個商品");
+      rating = +rating; if (!(rating >= 1 && rating <= 5)) throw new Error("請選 1～5 顆星");
+      const now = new Date().toISOString(), auto = reviews.settings().autoPublish;
+      let r = RV().find(x => x.orderId === o.id && x.productId === productId);
+      if (r) Object.assign(r, { rating, content: String(content || "").trim().slice(0, 500), updatedAt: now, status: r.status === "hidden" ? "hidden" : auto ? "visible" : "pending" });
+      else { r = { id: uid("rv"), productId, orderId: o.id, orderNumber: o.number, customerId: c.id, name: maskName(c.name), rating, content: String(content || "").trim().slice(0, 500), status: auto ? "visible" : "pending", reply: "", createdAt: now, updatedAt: now }; RV().push(r); }
+      commit();
+      return Object.assign(pubReview(r), { status: r.status });
+    },
+    pending: () => RV().filter(r => r.status === "pending").length,
+    async list({ status = "", rating = null } = {}, { offset = 0, limit = 50 } = {}) {
+      const all = RV(), f = all.filter(r => (!status || r.status === status) && (!rating || r.rating === +rating)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const vis = all.filter(r => r.status === "visible");
+      return clone({ total: f.length,
+        counts: { all: all.length, pending: all.filter(r => r.status === "pending").length, visible: vis.length, hidden: all.filter(r => r.status === "hidden").length,
+          avg: vis.length ? Math.round(vis.reduce((a, r) => a + r.rating, 0) / vis.length * 10) / 10 : null },
+        rows: f.slice(offset, offset + limit).map(r => Object.assign(pubReview(r), { status: r.status, orderNumber: r.orderNumber, customerId: r.customerId,
+          customerName: (S().customers.find(c => c.id === r.customerId) || {}).name || "", productName: (S().products.find(p => p.id === r.productId) || {}).name || "" })) });
+    },
+    async setStatus(id, st) { const r = RV().find(x => x.id === id); if (!r) throw new Error("找不到這則評價"); r.status = st; commit(); },
+    async reply(id, text) { const r = RV().find(x => x.id === id); if (!r) throw new Error("找不到這則評價"); r.reply = String(text || "").trim(); r.replyAt = r.reply ? new Date().toISOString() : null; commit(); },
+  };
+
   // 跟 db.js（資料庫版）對齊的介面：示範版功能全開、不用登入
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: true, platform: false };
+  const features = { members: true, images: true, inventory: true, tiers: true, reset: true, platform: false, staff: false };
   const ready = async () => ({ state: "ok" });
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
-    stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0] };
+    stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
+    me: () => ({ role: "owner", perms: [] }), can: () => true };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases, reports,
+    inventory, suppliers, purchases, reports, reviews,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

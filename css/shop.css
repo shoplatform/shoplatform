@@ -240,3 +240,41 @@
 /* 深色模式：Logo 多半是深色字，墊一塊淺色底才看得到 */
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .s-logo.has-img img { background: #f4f1ec; padding: 3px 8px; border-radius: 6px; } }
 :root[data-theme="dark"] .s-logo.has-img img { background: #f4f1ec; padding: 3px 8px; border-radius: 6px; }
+
+/* v0.16：商品評價 */
+.stars { display: inline-flex; gap: 1px; letter-spacing: 0; line-height: 1; vertical-align: -1px; }
+.stars i { font-style: normal; color: var(--s-line); font-size: 13px; }
+.stars i.on { color: #d69e1e; }
+.stars.is-big i { font-size: 20px; }
+.s-rating { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--s-muted); }
+.s-rating-link { text-decoration: none; }
+.s-reviews { margin: 28px 0 60px; gap: 18px; }
+.s-rv-top { display: grid; grid-template-columns: auto 1fr auto; gap: 16px 32px; align-items: center; }
+.s-rv-top h2 { margin-bottom: 6px; }
+.s-rv-avg { display: flex; align-items: center; gap: 10px; }
+.s-rv-avg b { font-family: var(--mono); font-size: 30px; font-weight: 500; }
+.s-rv-avg span { color: var(--s-muted); font-size: 13px; }
+.s-rv-dist { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; max-width: 280px; font-size: 12px; color: var(--s-muted); }
+.s-rv-dist li { display: grid; grid-template-columns: 36px 1fr 28px; gap: 8px; align-items: center; }
+.s-rv-dist i { height: 6px; border-radius: 3px; background: var(--s-soft); overflow: hidden; }
+.s-rv-dist i b { display: block; height: 100%; background: #d69e1e; }
+.s-rv-dist li > span:last-child { text-align: right; font-family: var(--mono); }
+.s-rv-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.s-rv { padding: 14px 0; border-top: 1px solid var(--s-line); display: grid; gap: 6px; }
+.s-rv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.s-rv-head .small { color: var(--s-muted); }
+.s-rv-badge { font-size: 11px; color: var(--s-muted); border: 1px solid var(--s-line); border-radius: 999px; padding: 0 8px; }
+.s-rv p { margin: 0; white-space: pre-wrap; }
+.s-rv-reply { background: var(--s-soft); border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+.s-rv-reply b { font-size: 12px; }
+.s-rv-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--s-line); flex-wrap: wrap; }
+.s-rv-row > span:first-child { flex: 1; min-width: 120px; }
+.star-pick { border: 0; padding: 0; margin: 0; display: inline-flex; flex-direction: row-reverse; justify-content: flex-end; gap: 4px; }
+.star-pick legend { width: 100%; margin-bottom: 4px; }
+.star-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.star-pick label { font-size: 32px; line-height: 1; color: #cfc8bd; cursor: pointer; }
+.star-pick input:checked ~ label, .star-pick label:hover, .star-pick label:hover ~ label { color: #d69e1e; }
+.star-pick input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.s-review-form { display: grid; gap: 12px; }
+@media (max-width: 700px) { .s-rv-top { grid-template-columns: 1fr; } }
