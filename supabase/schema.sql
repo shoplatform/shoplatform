@@ -1,8 +1,9 @@
 -- =========================================================
--- 開店平台 · 資料庫設定（第一階段）
+-- 開店平台 · 資料庫設定（v0.8：第一＋第二階段）
 --
 -- 用法：Supabase 後台左邊「SQL Editor」→ New query →
 --       把這整個檔案貼上 → 按 Run。可以重複執行，不會重複建資料。
+--       已經跑過舊版的資料庫，直接再跑一次新版就會升級（資料會保留）。
 --
 -- 安全設計：
 --   1. 所有資料表都開啟 RLS 而且「不開任何直接存取」，
@@ -151,11 +152,53 @@ create table if not exists stock_movements (
 );
 create index if not exists stock_movements_store_idx on stock_movements(store_id, at desc);
 
+-- ---------- 第二階段：會員、會員等級、進銷存 ----------
+alter table stores add column if not exists po_seq int not null default 0;
+alter table stores add column if not exists member_tiers jsonb not null default
+  '{"enabled":false,"period":"all","tiers":[{"id":"tier_base","name":"一般會員","minSpend":0,"percent":100,"freeShip":false}]}'::jsonb;
+
+-- 顧客：沒登入的顧客用手機分辨；登入的會員用帳號分辨（同一支手機可以同時有會員資料和舊的訪客資料）
+alter table customers add column if not exists registered_at timestamptz;
+alter table customers drop constraint if exists customers_store_id_phone_key;
+create unique index if not exists customers_guest_phone_idx on customers(store_id, phone) where user_id is null;
+create unique index if not exists customers_member_idx on customers(store_id, user_id) where user_id is not null;
+
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  name text not null check (length(name) between 1 and 40),
+  contact text not null default '',
+  phone text not null default '',
+  email text not null default '',
+  tax_id text not null default '',
+  address text not null default '',
+  note text not null default '',
+  created_at timestamptz not null default now(),
+  unique (store_id, name)
+);
+
+create table if not exists purchases (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id) on delete cascade,
+  number text not null,
+  supplier_id uuid references suppliers(id) on delete set null,
+  supplier_name text not null,
+  status text not null check (status in ('draft', 'ordered', 'partial', 'received', 'cancelled')),
+  expected_at date,
+  note text not null default '',
+  items jsonb not null default '[]'::jsonb,     -- [{productId, variantId, name, optionText, sku, qty, cost, received}]
+  history jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  ordered_at timestamptz,
+  received_at timestamptz,
+  unique (store_id, number)
+);
+
 -- 全部上鎖：開啟 RLS、不給任何直接存取
 do $$
 declare t text;
 begin
-  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements'] loop
+  foreach t in array array['stores','store_members','categories','products','variants','customers','orders','coupons','promotions','stock_movements','suppliers','purchases'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on table %I from anon, authenticated', t);
   end loop;
@@ -184,6 +227,11 @@ create or replace function _option_text(p_options jsonb, v_options jsonb) return
   select coalesce(string_agg(v_options ->> (o ->> 'name'), ' / ' order by ord), '')
   from jsonb_array_elements(p_options) with ordinality as x(o, ord)
   where v_options ? (o ->> 'name')
+$$;
+
+-- 目前登入的會員在這家店的顧客編號（沒登入或還沒加入會員是 null）
+create or replace function _member_id(p_store uuid) returns uuid language sql stable as $$
+  select id from customers where store_id = p_store and user_id = auth.uid() and auth.uid() is not null
 $$;
 
 create or replace function _store_by_slug(p_slug text) returns stores language plpgsql stable as $$
@@ -264,9 +312,37 @@ create or replace function _public_settings(s stores) returns jsonb language sql
     'paymentMethods', coalesce((select jsonb_agg(m) from jsonb_array_elements(s.settings -> 'paymentMethods') m where (m ->> 'enabled')::boolean), '[]'::jsonb))
 $$;
 
+-- ---------- 會員等級 ----------
+-- 有效消費：已付款以上、沒取消的訂單；period = '12m' 只算最近 12 個月
+create or replace function _member_level(p_store uuid, p_customer uuid) returns jsonb language plpgsql stable as $$
+declare cfg jsonb; spent int; cur jsonb; nxt jsonb; idx int := 0; i int := 0; t jsonb;
+begin
+  select member_tiers into cfg from stores where id = p_store;
+  if p_customer is null or cfg is null or not coalesce((cfg ->> 'enabled')::boolean, false) then return null; end if;
+  select coalesce(sum(total), 0) into spent from orders
+    where customer_id = p_customer and status in ('paid', 'shipped', 'completed')
+      and (cfg ->> 'period' <> '12m' or created_at >= now() - interval '365 days');
+  for t in select x from jsonb_array_elements(cfg -> 'tiers') x order by (x ->> 'minSpend')::int loop
+    if spent >= (t ->> 'minSpend')::int then cur := t; idx := i;
+    elsif nxt is null then nxt := t; end if;
+    i := i + 1;
+  end loop;
+  if cur is null then return null; end if;
+  return jsonb_build_object('tier', cur, 'index', idx, 'spent', spent, 'next', nxt,
+    'gap', case when nxt is null then 0 else (nxt ->> 'minSpend')::int - spent end);
+end $$;
+
+create or replace function _tier_benefit(t jsonb) returns text language sql immutable as $$
+  select coalesce(nullif(concat_ws('、',
+    case when (t ->> 'percent')::int < 100 then '全館 ' ||
+      case when (t ->> 'percent')::int % 10 = 0 then ((t ->> 'percent')::int / 10)::text else t ->> 'percent' end || ' 折' end,
+    case when coalesce((t ->> 'freeShip')::boolean, false) then '免運' end), ''), '累積消費升級')
+$$;
+
 -- ---------- 金額計算（伺服器版） ----------
 -- p_items：[{variantId, qty}]
--- 順序：商品小計 → 滿額折 → 優惠碼 → 運費；免運門檻看折扣後金額
+-- 順序：商品小計 → 滿額折 → 會員等級折扣 → 優惠碼 → 運費；免運門檻看折扣後金額
+-- p_customer：登入會員的顧客編號（沒登入是 null）
 create or replace function _quote(p_store uuid, p_items jsonb, p_ship text, p_coupon text, p_phone text, p_customer uuid)
 returns jsonb language plpgsql stable as $$
 declare
@@ -275,6 +351,7 @@ declare
   subtotal int := 0;
   promo jsonb; next_tier jsonb; promo_amt int := 0; after_promo int;
   cp coupons; cp_json jsonb; cp_err text := ''; cp_amt int := 0; cp_free boolean := false;
+  lvl jsonb; member_amt int := 0; after_member int; free_level boolean := false;
   used int; mine int;
   discounts jsonb := '[]'::jsonb;
   goods int; method jsonb; threshold int; free boolean; fee int;
@@ -319,6 +396,16 @@ begin
   promo_amt := coalesce((promo ->> 'amount')::int, 0);
   after_promo := subtotal - promo_amt;
 
+  -- 會員等級折扣
+  lvl := _member_level(p_store, p_customer);
+  if lvl is not null then
+    if (lvl #>> '{tier,percent}')::int < 100 then
+      member_amt := floor(after_promo * (100 - (lvl #>> '{tier,percent}')::int) / 100.0);
+    end if;
+    free_level := coalesce((lvl #>> '{tier,freeShip}')::boolean, false);
+  end if;
+  after_member := after_promo - member_amt;
+
   -- 優惠碼
   if coalesce(trim(p_coupon), '') <> '' then
     select * into cp from coupons where store_id = p_store and code = upper(trim(p_coupon));
@@ -348,9 +435,9 @@ begin
       end if;
       if cp_err = '' and not cp.stackable and promo is not null then cp_err := '這個優惠碼不能和滿額活動一起使用'; end if;
       if cp_err = '' then
-        if cp.type = 'amount' then cp_amt := least(cp.value, after_promo);
+        if cp.type = 'amount' then cp_amt := least(cp.value, after_member);
         elsif cp.type = 'percent' then
-          cp_amt := floor(after_promo * (100 - cp.value) / 100.0);
+          cp_amt := floor(after_member * (100 - cp.value) / 100.0);
           if cp.max_discount > 0 then cp_amt := least(cp_amt, cp.max_discount); end if;
         else cp_free := true;
         end if;
@@ -363,24 +450,28 @@ begin
     discounts := discounts || jsonb_build_object('kind', 'promo', 'label',
       (promo ->> 'name') || '（滿 ' || _money((promo ->> 'min')::int) || ' 折 ' || _money(promo_amt) || '）', 'amount', promo_amt);
   end if;
+  if member_amt > 0 or free_level then
+    discounts := discounts || jsonb_build_object('kind', 'member', 'label',
+      '會員等級 ' || (lvl #>> '{tier,name}') || '（' || _tier_benefit(lvl -> 'tier') || '）', 'amount', member_amt, 'freeShip', free_level);
+  end if;
   if cp_json is not null then
     discounts := discounts || jsonb_build_object('kind', 'coupon', 'code', cp.code, 'label', '優惠碼 ' || cp.code || '・' || cp.name,
       'amount', cp_amt, 'freeShip', cp_free);
   end if;
 
-  goods := subtotal - promo_amt - cp_amt;
+  goods := subtotal - promo_amt - member_amt - cp_amt;
   select m into method from jsonb_array_elements(s.settings -> 'shippingMethods') m
     where m ->> 'id' = p_ship and (m ->> 'enabled')::boolean;
   threshold := coalesce((s.settings ->> 'freeShippingThreshold')::int, 0);
-  free := (threshold > 0 and goods >= threshold) or cp_free;
+  free := (threshold > 0 and goods >= threshold) or cp_free or free_level;
   fee := case when method is null or free then 0 else (method ->> 'fee')::int end;
 
   return jsonb_build_object(
     'lines', lines, 'subtotal', subtotal, 'promo', promo, 'nextTier', next_tier,
-    'coupon', cp_json, 'couponError', cp_err, 'discounts', discounts, 'discount', promo_amt + cp_amt,
+    'coupon', cp_json, 'couponError', cp_err, 'discounts', discounts, 'discount', promo_amt + member_amt + cp_amt,
     'goods', goods, 'shippingFee', fee, 'total', goods + fee, 'freeShipByCoupon', cp_free,
     'freeGap', case when free then 0 else greatest(0, threshold - goods) end,
-    'level', null);
+    'level', lvl);
 end $$;
 
 -- =========================================================
@@ -398,7 +489,8 @@ begin
     'settings', _public_settings(s),
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
     'products', coalesce((select jsonb_agg(_product_json(p, false) order by p.created_at desc) from products p where p.store_id = s.id and p.status = 'active'), '[]'::jsonb),
-    'promotions', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'tiers', p.tiers)) from promotions p where p.store_id = s.id and _period_state(p.enabled, p.start_at, p.end_at) = 'active'), '[]'::jsonb));
+    'promotions', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'tiers', p.tiers)) from promotions p where p.store_id = s.id and _period_state(p.enabled, p.start_at, p.end_at) = 'active'), '[]'::jsonb),
+    'memberTiers', jsonb_build_object('enabled', coalesce((s.member_tiers ->> 'enabled')::boolean, false), 'period', s.member_tiers ->> 'period', 'tiers', s.member_tiers -> 'tiers'));
 end $$;
 
 -- 購物車／結帳試算
@@ -407,7 +499,7 @@ returns jsonb language plpgsql stable security definer set search_path = public 
 declare s stores; q jsonb;
 begin
   s := _store_by_slug(p_slug);
-  q := _quote(s.id, p_items, p_ship, p_coupon, nullif(regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g'), ''), null);
+  q := _quote(s.id, p_items, p_ship, p_coupon, nullif(regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g'), ''), _member_id(s.id));
   return jsonb_set(q, '{lines}', (select coalesce(jsonb_agg(l - 'cost'), '[]'::jsonb) from jsonb_array_elements(q -> 'lines') l));
 end $$;
 
@@ -420,7 +512,7 @@ declare
   v_phone text := regexp_replace(coalesce(p_order #>> '{contact,phone}', ''), '[\s-]', '', 'g');
   v_email text := trim(coalesce(p_order #>> '{contact,email}', ''));
   ship jsonb; pay jsonb; q jsonb; l jsonb;
-  cust uuid; num text; seq int; o orders; now_ts timestamptz := now();
+  cust uuid; member uuid; num text; seq int; o orders; now_ts timestamptz := now();
   v_address text := trim(coalesce(p_order #>> '{shipping,address}', ''));
   v_store_name text := trim(coalesce(p_order #>> '{shipping,storeName}', ''));
   v_items jsonb := p_order -> 'items';
@@ -444,7 +536,8 @@ begin
   perform 1 from variants v where v.store_id = s.id
     and v.id in (select (x ->> 'variantId')::uuid from jsonb_array_elements(v_items) x) for update;
 
-  q := _quote(s.id, v_items, ship ->> 'id', p_order ->> 'coupon', v_phone, null);
+  member := _member_id(s.id);
+  q := _quote(s.id, v_items, ship ->> 'id', p_order ->> 'coupon', v_phone, member);
   if jsonb_array_length(q -> 'lines') = 0 then raise exception '購物車是空的，或商品已下架'; end if;
   if jsonb_array_length(q -> 'lines') < (select count(*) from jsonb_array_elements(v_items) x where (x ->> 'qty')::int > 0) then
     raise exception '購物車裡有商品已下架，請回購物車確認';
@@ -458,11 +551,15 @@ begin
     raise exception '優惠碼 %：%（可以先移除優惠碼再結帳）', upper(p_order ->> 'coupon'), q ->> 'couponError';
   end if;
 
-  insert into customers(store_id, name, phone, email) values (s.id, v_name, v_phone, v_email)
-  on conflict (store_id, phone) do update
-    set name = case when customers.user_id is null then excluded.name else customers.name end,
-        email = case when customers.user_id is null and excluded.email <> '' then excluded.email else customers.email end
-  returning id into cust;
+  -- 登入的會員：訂單掛在會員資料下；沒登入：用手機找（或建立）訪客資料
+  if member is not null then
+    cust := member;
+  else
+    insert into customers(store_id, name, phone, email) values (s.id, v_name, v_phone, v_email)
+    on conflict (store_id, phone) where user_id is null do update
+      set name = excluded.name, email = case when excluded.email <> '' then excluded.email else customers.email end
+    returning id into cust;
+  end if;
 
   update stores set order_seq = order_seq + 1 where id = s.id returning order_seq into seq;
   num := 'SO' || (240000 + seq);
@@ -546,7 +643,17 @@ begin
     'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.sort, c.created_at) from categories c where c.store_id = s.id), '[]'::jsonb),
     'products', coalesce((select jsonb_agg(_product_json(p, true) order by p.created_at desc) from products p where p.store_id = s.id), '[]'::jsonb),
     'customers', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'phone', c.phone, 'email', c.email,
-        'createdAt', c.created_at, 'hasAccount', c.user_id is not null)) from customers c where c.store_id = s.id), '[]'::jsonb),
+        'createdAt', c.created_at, 'hasAccount', c.user_id is not null, 'registeredAt', c.registered_at)) from customers c where c.store_id = s.id), '[]'::jsonb),
+    'memberTiers', s.member_tiers,
+    'suppliers', coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'name', x.name, 'contact', x.contact, 'phone', x.phone, 'email', x.email,
+        'taxId', x.tax_id, 'address', x.address, 'note', x.note, 'createdAt', x.created_at) order by x.name) from suppliers x where x.store_id = s.id), '[]'::jsonb),
+    'purchases', coalesce((select jsonb_agg(jsonb_build_object('id', po.id, 'number', po.number, 'supplierId', po.supplier_id, 'supplierName', po.supplier_name,
+        'status', po.status, 'expectedAt', coalesce(po.expected_at::text, ''), 'note', po.note, 'items', po.items, 'history', po.history,
+        'createdAt', po.created_at, 'orderedAt', po.ordered_at, 'receivedAt', po.received_at) order by po.created_at desc)
+        from (select * from purchases where store_id = s.id order by created_at desc limit 500) po), '[]'::jsonb),
+    'movements', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'at', m.at, 'productId', m.product_id, 'variantId', m.variant_id,
+        'name', m.name, 'optionText', m.option_text, 'sku', m.sku, 'delta', m.delta, 'after', m.after, 'type', m.type, 'ref', m.ref, 'note', m.note) order by m.at)
+        from (select * from stock_movements where store_id = s.id order by at desc limit 1000) m), '[]'::jsonb),
     'orders', coalesce((select jsonb_agg(_order_json(o) order by o.created_at desc) from (select * from orders where store_id = s.id order by created_at desc limit 1000) o), '[]'::jsonb),
     'coupons', coalesce((select jsonb_agg(_coupon_json(c) order by c.created_at desc) from coupons c where c.store_id = s.id), '[]'::jsonb),
     'promotions', coalesce((select jsonb_agg(_promotion_json(p) order by p.created_at desc) from promotions p where p.store_id = s.id), '[]'::jsonb),
@@ -594,24 +701,34 @@ language plpgsql volatile security definer set search_path = public as $$
 declare
   pid uuid := nullif(p_product ->> 'id', '')::uuid;
   v jsonb; vid uuid; keep uuid[] := '{}'; ord int := 0; delta int; cur int;
-  cats uuid[];
+  cats uuid[]; v_images jsonb;
 begin
   perform _require_member(p_store);
   if coalesce(trim(p_product ->> 'name'), '') = '' then raise exception '請輸入商品名稱'; end if;
+  -- 商品圖片：只接受這家店自己上傳到雲端的圖片網址
+  select coalesce(jsonb_agg(jsonb_build_object('id', im ->> 'id', 'url', im ->> 'url', 'path', im ->> 'path',
+      'width', coalesce((im ->> 'width')::int, 0), 'height', coalesce((im ->> 'height')::int, 0))), '[]'::jsonb)
+  into v_images from jsonb_array_elements(coalesce(p_product -> 'images', '[]'::jsonb)) im;
+  if jsonb_array_length(v_images) > 8 then raise exception '每個商品最多 8 張圖片'; end if;
+  if exists (select 1 from jsonb_array_elements(v_images) im
+             where im ->> 'url' not like '%/storage/v1/object/public/product-images/' || p_store::text || '/%'
+                or im ->> 'path' not like p_store::text || '/%') then
+    raise exception '圖片網址不正確，請重新上傳';
+  end if;
   if jsonb_array_length(coalesce(p_product -> 'variants', '[]'::jsonb)) = 0 then raise exception '至少需要一個規格'; end if;
   select coalesce(array_agg(c.id), '{}') into cats from categories c
     where c.store_id = p_store and c.id in (select (x #>> '{}')::uuid from jsonb_array_elements(coalesce(p_product -> 'categoryIds', '[]'::jsonb)) x);
   if pid is null then
-    insert into products(store_id, name, description, status, color, category_ids, options)
+    insert into products(store_id, name, description, status, color, category_ids, options, images)
     values (p_store, trim(p_product ->> 'name'), coalesce(p_product ->> 'description', ''),
       case when p_product ->> 'status' = 'active' then 'active' else 'draft' end,
       coalesce(nullif(p_product ->> 'color', ''), (array['#8a9a8e','#b7a38b','#6d7b86','#a58a6f','#4f6b66','#7a5a43','#8c7f99'])[1 + floor(random() * 7)::int]),
-      cats, coalesce(p_product -> 'options', '[]'::jsonb))
+      cats, coalesce(p_product -> 'options', '[]'::jsonb), v_images)
     returning id into pid;
   else
     update products set name = trim(p_product ->> 'name'), description = coalesce(p_product ->> 'description', ''),
       status = case when p_product ->> 'status' = 'active' then 'active' else 'draft' end,
-      category_ids = cats, options = coalesce(p_product -> 'options', '[]'::jsonb), updated_at = now()
+      category_ids = cats, options = coalesce(p_product -> 'options', '[]'::jsonb), images = v_images, updated_at = now()
     where id = pid and store_id = p_store;
     if not found then raise exception '找不到這個商品'; end if;
   end if;
@@ -769,6 +886,284 @@ begin
 end $$;
 
 -- =========================================================
+-- 前台會員（顧客用 Email 帳號登入，第二階段）
+-- =========================================================
+
+-- 登入後呼叫：取得這家店的會員資料（還沒加入就回 null）
+create or replace function shop_member_me(p_slug text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s stores; c customers;
+begin
+  s := _store_by_slug(p_slug);
+  if auth.uid() is null then return null; end if;
+  select * into c from customers where store_id = s.id and user_id = auth.uid();
+  if not found then return null; end if;
+  return jsonb_build_object('id', c.id, 'name', c.name, 'phone', c.phone, 'email', c.email, 'hasAccount', true,
+    'registeredAt', c.registered_at,
+    'orderCount', (select count(*) from orders where customer_id = c.id and status <> 'cancelled'),
+    'totalSpent', (select coalesce(sum(total), 0) from orders where customer_id = c.id and status <> 'cancelled'),
+    'level', _member_level(s.id, c.id));
+end $$;
+
+-- 加入這家店的會員（Email 要先驗證過）。
+-- 以前用同一個 Email 下過的訪客訂單會自動接上；只用手機比對不會接上（手機沒有驗證）。
+create or replace function shop_member_join(p_slug text, p_name text, p_phone text) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; u record; cid uuid; v_name text := trim(coalesce(p_name, '')); v_phone text := regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g');
+begin
+  s := _store_by_slug(p_slug);
+  if auth.uid() is null then raise exception '請先登入'; end if;
+  select id, email, email_confirmed_at into u from auth.users where id = auth.uid();
+  if u.email_confirmed_at is null then raise exception '請先到信箱完成 Email 驗證'; end if;
+  if v_name = '' then raise exception '請填寫姓名'; end if;
+  if length(v_name) > 40 then raise exception '姓名太長'; end if;
+  if v_phone !~ '^09\d{8}$' then raise exception '手機格式應為 09 開頭共 10 碼'; end if;
+  select id into cid from customers where store_id = s.id and user_id = auth.uid();
+  if cid is null then
+    select id into cid from customers where store_id = s.id and user_id is null and email <> '' and lower(email) = lower(u.email)
+      order by created_at limit 1 for update;
+    if cid is not null then
+      update customers set user_id = auth.uid(), registered_at = now(), name = v_name, email = u.email where id = cid;
+    else
+      insert into customers(store_id, name, phone, email, user_id, registered_at) values (s.id, v_name, v_phone, u.email, auth.uid(), now())
+      returning id into cid;
+    end if;
+  end if;
+  update customers set name = v_name, phone = v_phone, email = u.email where id = cid;
+  return shop_member_me(p_slug);
+end $$;
+
+create or replace function shop_member_update(p_slug text, p_name text, p_phone text) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; cid uuid; v_name text := trim(coalesce(p_name, '')); v_phone text := regexp_replace(coalesce(p_phone, ''), '[\s-]', '', 'g');
+begin
+  s := _store_by_slug(p_slug);
+  cid := _member_id(s.id);
+  if cid is null then raise exception '請先登入'; end if;
+  if v_name = '' then raise exception '請填寫姓名'; end if;
+  if v_phone !~ '^09\d{8}$' then raise exception '手機格式應為 09 開頭共 10 碼'; end if;
+  update customers set name = v_name, phone = v_phone where id = cid;
+  return shop_member_me(p_slug);
+end $$;
+
+create or replace function shop_my_orders(p_slug text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s stores; cid uuid;
+begin
+  s := _store_by_slug(p_slug);
+  cid := _member_id(s.id);
+  if cid is null then return '[]'::jsonb; end if;
+  return coalesce((select jsonb_agg(_order_customer_json(o) order by o.created_at desc) from orders o where o.customer_id = cid), '[]'::jsonb);
+end $$;
+
+-- 會員取消自己「待付款」的訂單
+create or replace function shop_member_cancel(p_slug text, p_number text) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare s stores; o orders; cid uuid;
+begin
+  s := _store_by_slug(p_slug);
+  cid := _member_id(s.id);
+  if cid is null then raise exception '請先登入'; end if;
+  select * into o from orders where store_id = s.id and number = upper(trim(p_number)) and customer_id = cid;
+  if not found then raise exception '找不到這筆訂單'; end if;
+  return shop_cancel_order(p_slug, o.number, o.contact ->> 'phone');
+end $$;
+
+-- =========================================================
+-- 後台：會員等級、盤點、供應商、進貨單（第二階段）
+-- =========================================================
+
+create or replace function admin_save_tiers(p_store uuid, p_cfg jsonb) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare v_tiers jsonb;
+begin
+  perform _require_member(p_store);
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', coalesce(nullif(t ->> 'id', ''), 'tier_' || substr(md5(random()::text), 1, 8)),
+      'name', trim(t ->> 'name'),
+      'minSpend', greatest(0, coalesce((t ->> 'minSpend')::numeric, 0))::int,
+      'percent', least(100, greatest(1, coalesce((t ->> 'percent')::numeric, 100)))::int,
+      'freeShip', coalesce((t ->> 'freeShip')::boolean, false))
+    order by greatest(0, coalesce((t ->> 'minSpend')::numeric, 0))), '[]'::jsonb)
+  into v_tiers from jsonb_array_elements(coalesce(p_cfg -> 'tiers', '[]'::jsonb)) t;
+  if jsonb_array_length(v_tiers) = 0 then raise exception '至少要有一個等級'; end if;
+  if jsonb_array_length(v_tiers) > 5 then raise exception '最多 5 個等級'; end if;
+  if exists (select 1 from jsonb_array_elements(v_tiers) t where coalesce(t ->> 'name', '') = '') then raise exception '每個等級都要有名稱'; end if;
+  if (select count(distinct t ->> 'name') from jsonb_array_elements(v_tiers) t) <> jsonb_array_length(v_tiers) then raise exception '等級名稱不能重複'; end if;
+  if (select count(distinct t ->> 'minSpend') from jsonb_array_elements(v_tiers) t) <> jsonb_array_length(v_tiers) then raise exception '升級門檻不能重複'; end if;
+  v_tiers := jsonb_set(v_tiers, '{0,minSpend}', '0');   -- 最低等級一定從 0 開始
+  update stores set member_tiers = jsonb_build_object(
+    'enabled', coalesce((p_cfg ->> 'enabled')::boolean, false),
+    'period', case when p_cfg ->> 'period' = '12m' then '12m' else 'all' end,
+    'tiers', v_tiers) where id = p_store;
+end $$;
+
+-- 盤點調整：p_mode 'set' 設成實際數量、'delta' 增減
+create or replace function admin_adjust_stock(p_store uuid, p_variant uuid, p_mode text, p_qty int, p_reason text, p_note text default '')
+returns jsonb language plpgsql volatile security definer set search_path = public as $$
+declare cur int; target int; d int;
+begin
+  perform _require_member(p_store);
+  select stock into cur from variants where id = p_variant and store_id = p_store for update;
+  if not found then raise exception '找不到這個規格'; end if;
+  if p_qty is null then raise exception '請填數量'; end if;
+  target := case when p_mode = 'set' then p_qty else cur + p_qty end;
+  if target < 0 then raise exception '調整後庫存不能小於 0（目前 %）', cur; end if;
+  d := target - cur;
+  if d = 0 then raise exception '數量沒有變化'; end if;
+  if coalesce(trim(p_reason), '') = '' then raise exception '請選擇調整原因'; end if;
+  update variants set stock = target where id = p_variant;
+  perform _log_move(p_store, p_variant, d, 'adjust', '',
+    concat_ws('：', trim(p_reason), nullif(trim(coalesce(p_note, '')), '')) || case when p_mode = 'set' then '（盤點實際數量 ' || target || '）' else '' end);
+  return jsonb_build_object('stock', target, 'delta', d);
+end $$;
+
+create or replace function admin_save_supplier(p_store uuid, p_supplier jsonb) returns uuid
+language plpgsql volatile security definer set search_path = public as $$
+declare sid uuid := nullif(p_supplier ->> 'id', '')::uuid; v_name text := trim(coalesce(p_supplier ->> 'name', ''));
+  v_tax text := trim(coalesce(p_supplier ->> 'taxId', '')); v_email text := trim(coalesce(p_supplier ->> 'email', ''));
+begin
+  perform _require_member(p_store);
+  if v_name = '' then raise exception '請填寫供應商名稱'; end if;
+  if v_tax <> '' and v_tax !~ '^\d{8}$' then raise exception '統一編號是 8 位數字'; end if;
+  if v_email <> '' and v_email !~ '^[^\s@]+@[^\s@]+\.[^\s@]+$' then raise exception 'Email 格式不正確'; end if;
+  if exists (select 1 from suppliers where store_id = p_store and name = v_name and id is distinct from sid) then raise exception '已經有同名的供應商'; end if;
+  if sid is null then
+    insert into suppliers(store_id, name, contact, phone, email, tax_id, address, note)
+    values (p_store, v_name, trim(coalesce(p_supplier ->> 'contact', '')), trim(coalesce(p_supplier ->> 'phone', '')), v_email, v_tax,
+            trim(coalesce(p_supplier ->> 'address', '')), trim(coalesce(p_supplier ->> 'note', ''))) returning id into sid;
+  else
+    update suppliers set name = v_name, contact = trim(coalesce(p_supplier ->> 'contact', '')), phone = trim(coalesce(p_supplier ->> 'phone', '')),
+      email = v_email, tax_id = v_tax, address = trim(coalesce(p_supplier ->> 'address', '')), note = trim(coalesce(p_supplier ->> 'note', ''))
+    where id = sid and store_id = p_store;
+    if not found then raise exception '找不到這個供應商'; end if;
+  end if;
+  return sid;
+end $$;
+
+create or replace function admin_delete_supplier(p_store uuid, p_id uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_member(p_store);
+  if exists (select 1 from purchases where store_id = p_store and supplier_id = p_id and status in ('ordered', 'partial')) then
+    raise exception '這個供應商還有未入庫的進貨單，先處理完再刪除';
+  end if;
+  delete from suppliers where id = p_id and store_id = p_store;
+end $$;
+
+-- 建立或修改進貨單草稿
+create or replace function admin_save_purchase(p_store uuid, p_po jsonb) returns uuid
+language plpgsql volatile security definer set search_path = public as $$
+declare pid uuid := nullif(p_po ->> 'id', '')::uuid; po purchases; sp suppliers; v_items jsonb := '[]'::jsonb; it jsonb; r record; seq int;
+begin
+  perform _require_member(p_store);
+  if pid is not null then
+    select * into po from purchases where id = pid and store_id = p_store for update;
+    if not found then raise exception '找不到這張進貨單'; end if;
+    if po.status <> 'draft' then raise exception '已下單的進貨單不能再修改品項'; end if;
+  end if;
+  select * into sp from suppliers where id = nullif(p_po ->> 'supplierId', '')::uuid and store_id = p_store;
+  if not found then raise exception '請選擇供應商'; end if;
+  for it in select * from jsonb_array_elements(coalesce(p_po -> 'items', '[]'::jsonb)) loop
+    select p.id as product_id, p.name, v.id as variant_id, v.sku, _option_text(p.options, v.options) as option_text into r
+    from variants v join products p on p.id = v.product_id where v.id = nullif(it ->> 'variantId', '')::uuid and v.store_id = p_store;
+    if not found then raise exception '有品項找不到對應的商品規格'; end if;
+    if coalesce((it ->> 'qty')::numeric, 0) < 1 then raise exception '「%」數量要大於 0', r.name; end if;
+    if coalesce((it ->> 'cost')::numeric, 0) < 0 then raise exception '「%」進價不能是負數', r.name; end if;
+    if v_items @> jsonb_build_array(jsonb_build_object('variantId', r.variant_id)) then raise exception '同一個規格不要重複列，請合併數量'; end if;
+    v_items := v_items || jsonb_build_object('productId', r.product_id, 'variantId', r.variant_id, 'name', r.name, 'optionText', r.option_text,
+      'sku', r.sku, 'qty', floor((it ->> 'qty')::numeric)::int, 'cost', round((it ->> 'cost')::numeric)::int, 'received', 0);
+  end loop;
+  if jsonb_array_length(v_items) = 0 then raise exception '至少要有一個品項'; end if;
+  if pid is null then
+    update stores set po_seq = po_seq + 1 where id = p_store returning po_seq into seq;
+    insert into purchases(store_id, number, supplier_id, supplier_name, status, expected_at, note, items, history)
+    values (p_store, 'PO' || (240000 + seq), sp.id, sp.name, 'draft', nullif(p_po ->> 'expectedAt', '')::date, trim(coalesce(p_po ->> 'note', '')), v_items,
+            jsonb_build_array(jsonb_build_object('status', 'draft', 'at', now())))
+    returning id into pid;
+  else
+    update purchases set supplier_id = sp.id, supplier_name = sp.name, expected_at = nullif(p_po ->> 'expectedAt', '')::date,
+      note = trim(coalesce(p_po ->> 'note', '')), items = v_items where id = pid;
+  end if;
+  return pid;
+end $$;
+
+create or replace function admin_place_purchase(p_store uuid, p_id uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_member(p_store);
+  update purchases set status = 'ordered', ordered_at = now(), history = history || jsonb_build_array(jsonb_build_object('status', 'ordered', 'at', now()))
+  where id = p_id and store_id = p_store and status = 'draft';
+  if not found then raise exception '只有草稿可以送出'; end if;
+end $$;
+
+-- 入庫：p_qtys = {variantId: 這次收到的數量}；用移動平均更新成本
+create or replace function admin_receive_purchase(p_store uuid, p_id uuid, p_qtys jsonb, p_note text default '') returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare po purchases; it jsonb; n int; new_items jsonb := '[]'::jsonb; any_in boolean := false; done boolean := true;
+  cur_stock int; cur_cost int; parts text[] := '{}';
+begin
+  perform _require_member(p_store);
+  select * into po from purchases where id = p_id and store_id = p_store for update;
+  if not found or po.status not in ('ordered', 'partial') then raise exception '這張進貨單現在不能入庫'; end if;
+  for it in select * from jsonb_array_elements(po.items) loop
+    n := coalesce(floor((p_qtys ->> (it ->> 'variantId'))::numeric)::int, 0);
+    if n < 0 then raise exception '「%」數量不能是負數', it ->> 'name'; end if;
+    if n > (it ->> 'qty')::int - (it ->> 'received')::int then
+      raise exception '%', format('「%s%s」最多還能收 %s', it ->> 'name', case when it ->> 'optionText' <> '' then '／' || (it ->> 'optionText') else '' end,
+        (it ->> 'qty')::int - (it ->> 'received')::int);
+    end if;
+    if n > 0 then
+      select stock, cost into cur_stock, cur_cost from variants where id = (it ->> 'variantId')::uuid and store_id = p_store for update;
+      if not found then raise exception '「%」的商品規格已被刪除，無法入庫', it ->> 'name'; end if;
+      update variants set
+        cost = case when greatest(cur_stock, 0) + n > 0 then round((greatest(cur_stock, 0) * cur_cost + n * (it ->> 'cost')::int)::numeric / (greatest(cur_stock, 0) + n))::int else (it ->> 'cost')::int end,
+        stock = stock + n
+      where id = (it ->> 'variantId')::uuid;
+      perform _log_move(p_store, (it ->> 'variantId')::uuid, n, 'purchase', po.number, po.supplier_name || '，進價 ' || _money((it ->> 'cost')::int));
+      it := jsonb_set(it, '{received}', to_jsonb((it ->> 'received')::int + n));
+      any_in := true;
+      parts := parts || ((it ->> 'name') || case when it ->> 'optionText' <> '' then '／' || (it ->> 'optionText') else '' end || ' ×' || n);
+    end if;
+    if (it ->> 'received')::int < (it ->> 'qty')::int then done := false; end if;
+    new_items := new_items || it;
+  end loop;
+  if not any_in then raise exception '請填這次收到的數量'; end if;
+  update purchases set items = new_items, status = case when done then 'received' else 'partial' end,
+    received_at = case when done then now() else received_at end,
+    history = history || jsonb_build_array(jsonb_build_object('status', case when done then 'received' else 'partial' end, 'at', now(),
+      'note', array_to_string(parts, '、') || case when coalesce(trim(p_note), '') <> '' then '（' || trim(p_note) || '）' else '' end))
+  where id = po.id;
+end $$;
+
+-- 取消：草稿、已下單直接取消；部分入庫則是「剩下的不收了」
+create or replace function admin_cancel_purchase(p_store uuid, p_id uuid, p_note text default '') returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare po purchases;
+begin
+  perform _require_member(p_store);
+  select * into po from purchases where id = p_id and store_id = p_store for update;
+  if not found or po.status not in ('draft', 'ordered', 'partial') then raise exception '這張進貨單不能取消'; end if;
+  if po.status = 'partial' then
+    update purchases set status = 'received', received_at = now(),
+      items = (select coalesce(jsonb_agg(jsonb_set(i, '{qty}', i -> 'received')), '[]'::jsonb) from jsonb_array_elements(po.items) i where (i ->> 'received')::int > 0),
+      history = history || jsonb_build_array(jsonb_build_object('status', 'received', 'at', now(), 'note', '剩下的數量不再進貨' || case when coalesce(p_note, '') <> '' then '（' || p_note || '）' else '' end))
+    where id = po.id;
+  else
+    update purchases set status = 'cancelled', history = history || jsonb_build_array(jsonb_build_object('status', 'cancelled', 'at', now(), 'note', coalesce(p_note, '')))
+    where id = po.id;
+  end if;
+end $$;
+
+create or replace function admin_delete_purchase(p_store uuid, p_id uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  perform _require_member(p_store);
+  delete from purchases where id = p_id and store_id = p_store and status = 'draft';
+  if not found then raise exception '只有草稿可以刪除'; end if;
+end $$;
+
+-- =========================================================
 -- 設定用（只能在 SQL Editor 執行）
 -- =========================================================
 
@@ -856,6 +1251,28 @@ begin
   return '已建立範例商店「晨霧選物」';
 end $$;
 
+-- ---------- 商品圖片：雲端儲存空間 ----------
+-- 公開的圖片資料夾（任何人都能看圖），但只有這家店的管理者能上傳、刪除「自己商店資料夾」裡的圖
+create or replace function is_store_member(p_store text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  return exists (select 1 from store_members where user_id = auth.uid() and store_id::text = p_store);
+end $$;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('product-images', 'product-images', true, 2097152, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update set public = true, file_size_limit = 2097152, allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp'];
+
+drop policy if exists "product images: members insert" on storage.objects;
+create policy "product images: members insert" on storage.objects for insert to authenticated
+  with check (bucket_id = 'product-images' and public.is_store_member((storage.foldername(name))[1]));
+drop policy if exists "product images: members select" on storage.objects;
+create policy "product images: members select" on storage.objects for select to authenticated
+  using (bucket_id = 'product-images' and public.is_store_member((storage.foldername(name))[1]));
+drop policy if exists "product images: members delete" on storage.objects;
+create policy "product images: members delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'product-images' and public.is_store_member((storage.foldername(name))[1]));
+
 -- ---------- 權限：只開放該開的函式 ----------
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function shop_catalog(text), shop_quote(text, jsonb, text, text, text), shop_place_order(text, jsonb),
@@ -865,6 +1282,35 @@ grant execute on function admin_my_stores(), admin_bootstrap(uuid), admin_save_s
   admin_save_product(uuid, jsonb), admin_delete_product(uuid, uuid),
   admin_set_order_status(uuid, uuid, text, text, text), admin_set_order_note(uuid, uuid, text),
   admin_save_coupon(uuid, jsonb), admin_delete_coupon(uuid, uuid),
-  admin_save_promotion(uuid, jsonb), admin_delete_promotion(uuid, uuid) to authenticated;
+  admin_save_promotion(uuid, jsonb), admin_delete_promotion(uuid, uuid),
+  admin_save_tiers(uuid, jsonb), admin_adjust_stock(uuid, uuid, text, int, text, text),
+  admin_save_supplier(uuid, jsonb), admin_delete_supplier(uuid, uuid),
+  admin_save_purchase(uuid, jsonb), admin_place_purchase(uuid, uuid), admin_receive_purchase(uuid, uuid, jsonb, text),
+  admin_cancel_purchase(uuid, uuid, text), admin_delete_purchase(uuid, uuid),
+  shop_member_me(text), shop_member_join(text, text, text), shop_member_update(text, text, text),
+  shop_my_orders(text), shop_member_cancel(text, text), is_store_member(text) to authenticated;
 
 select setup_demo_store();
+
+-- 第二階段的範例資料：範例商店的會員等級、供應商（已經有就跳過）
+do $$
+declare sid uuid;
+begin
+  select id into sid from stores where slug = 'demo';
+  if sid is null then return; end if;
+  if not coalesce((select (member_tiers ->> 'enabled')::boolean from stores where id = sid), false)
+     and jsonb_array_length((select member_tiers -> 'tiers' from stores where id = sid)) <= 1 then
+    update stores set member_tiers = '{"enabled":true,"period":"all","tiers":[
+      {"id":"tier_base","name":"一般會員","minSpend":0,"percent":100,"freeShip":false},
+      {"id":"tier_silver","name":"銀卡","minSpend":3000,"percent":95,"freeShip":false},
+      {"id":"tier_gold","name":"金卡","minSpend":10000,"percent":90,"freeShip":true}]}'::jsonb where id = sid;
+  end if;
+  if not exists (select 1 from suppliers where store_id = sid) then
+    insert into suppliers(store_id, name, contact, phone, email, address, note) values
+      (sid, '土感陶作工房', '吳師傅', '049-2345-678', 'clay@example.com', '南投縣水里鄉', '手作陶器，交期約 2 週'),
+      (sid, '棉麻織造社', '李小姐', '02-2765-4321', 'textile@example.com', '新北市三重區', '服飾、圍裙、帆布包'),
+      (sid, '森調香氛工作室', '周先生', '0933-222-111', 'scent@example.com', '台中市南屯區', '');
+  end if;
+end $$;
+
+select '完成：資料庫是 v0.8 版' as result;

@@ -95,7 +95,9 @@
           <a class="s-logo" href="#shop">${esc(st.name)}</a>
           <input type="search" class="s-search" id="s-q" placeholder="搜尋商品" value="${esc(query)}" aria-label="搜尋商品">
           <nav class="s-nav" aria-label="會員">
-            ${user ? `<a href="#shop/account">${esc(user.name)}</a>` : `<a href="#shop/track">訂單查詢</a>${DB.features.members ? `<a href="#shop/login">登入</a>` : ""}`}
+            ${user ? `<a href="#shop/account">${esc(user.name)}</a>`
+              : DB.auth.session && DB.auth.session() ? `<a href="#shop/join">完成會員資料</a>`
+              : `<a href="#shop/track">訂單查詢</a>${DB.features.members ? `<a href="#shop/login">登入</a>` : ""}`}
           </nav>
           <a class="s-cart" href="#shop/cart">購物車 <b>${n}</b></a>
         </div></header>
@@ -524,10 +526,156 @@
     });
   }
 
+  /* ========== 會員（Email 帳號，資料庫版） ========== */
+  function viewLoginEmail() {
+    if (DB.auth.current()) return Router.go(afterLogin);
+    if (DB.auth.session()) return Router.go("shop/join");
+    shell(`
+      <div class="s-wrap s-page s-narrow">
+        <h1>會員登入</h1>
+        <form class="s-box" id="le-form" novalidate>
+          <div class="field"><label for="le-email">Email</label><input type="email" id="le-email" autocomplete="username" required></div>
+          <div class="field"><label for="le-pw">密碼</label><input type="password" id="le-pw" autocomplete="current-password" required></div>
+          <button class="btn btn-primary" type="submit" style="padding:11px">登入</button>
+          <div class="s-links"><a href="#shop/register">還沒有帳號？註冊</a><a href="#shop/forgot">忘記密碼</a></div>
+          <div class="s-links"><a href="#shop/track">不登入，直接查訂單</a></div>
+        </form>
+      </div>`);
+    const f = document.getElementById("le-form");
+    f.querySelector("#le-email").focus();
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      busy(f.querySelector("button[type=submit]"), async () => {
+        const u = await DB.auth.login(f.querySelector("#le-email").value, f.querySelector("#le-pw").value);
+        if (!u) return Router.go("shop/join");
+        toast(`歡迎回來，${u.name}`);
+        const back = afterLogin; afterLogin = "shop/account";
+        Router.go(back);
+      });
+    });
+  }
+
+  function viewRegisterEmail() {
+    if (DB.auth.current()) return Router.go("shop/account");
+    const pre = regPrefill || {}; regPrefill = null;
+    shell(`
+      <div class="s-wrap s-page s-narrow">
+        <h1>註冊會員</h1>
+        <form class="s-box" id="re-form" novalidate>
+          <div class="field"><label for="re-email">Email</label><input type="email" id="re-email" autocomplete="email" value="${esc(pre.email || "")}"><span class="hint">用這個 Email 登入；以前用同一個 Email 下過的訂單會自動接上</span></div>
+          <div class="field"><label for="re-name">姓名</label><input type="text" id="re-name" autocomplete="name" value="${esc(pre.name || "")}"></div>
+          <div class="field"><label for="re-phone">手機</label><input type="tel" id="re-phone" autocomplete="tel" placeholder="0912345678" value="${esc(pre.phone || "")}"></div>
+          <div class="field"><label for="re-pw">設定密碼</label><input type="password" id="re-pw" autocomplete="new-password"><span class="hint">至少 8 個字元</span></div>
+          <button class="btn btn-primary" type="submit" style="padding:11px">註冊</button>
+          <div class="s-links"><a href="#shop/login">已經有帳號？登入</a></div>
+        </form>
+        <div class="s-box" id="re-sent" hidden>
+          <h2>請到信箱確認</h2>
+          <p style="margin:0;color:var(--s-muted)">我們寄了一封確認信到 <b id="re-to"></b>。點信裡的連結就會回到這裡並完成註冊。</p>
+          <p class="small" style="margin:0;color:var(--s-muted)">沒收到？看一下垃圾信件匣；幾分鐘後還是沒有，可以再註冊一次或聯絡客服。</p>
+        </div>
+      </div>`);
+    const f = document.getElementById("re-form");
+    f.querySelector(pre.email ? "#re-pw" : "#re-email").focus();
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      busy(f.querySelector("button[type=submit]"), async () => {
+        const email = f.querySelector("#re-email").value.trim();
+        const r = await DB.auth.signup({ email, password: f.querySelector("#re-pw").value,
+          name: f.querySelector("#re-name").value, phone: f.querySelector("#re-phone").value });
+        if (r.needConfirm) {
+          f.hidden = true;
+          document.getElementById("re-to").textContent = email;
+          document.getElementById("re-sent").hidden = false;
+        } else { toast("註冊完成"); Router.go("shop/account"); }
+      });
+    });
+  }
+
+  // 登入了但這家店還沒有會員資料（例如在別的瀏覽器確認信箱）
+  function viewJoin() {
+    if (DB.auth.current()) return Router.go("shop/account");
+    const sess = DB.auth.session();
+    if (!sess) return Router.go("shop/login");
+    shell(`
+      <div class="s-wrap s-page s-narrow">
+        <h1>完成會員資料</h1>
+        <form class="s-box" id="jn-form" novalidate>
+          <p style="margin:0;color:var(--s-muted)">帳號：${esc(sess.email)}</p>
+          <div class="field"><label for="jn-name">姓名</label><input type="text" id="jn-name" autocomplete="name"></div>
+          <div class="field"><label for="jn-phone">手機</label><input type="tel" id="jn-phone" autocomplete="tel" placeholder="0912345678"></div>
+          <button class="btn btn-primary" type="submit" style="padding:11px">完成</button>
+          <div class="s-links"><button class="btn btn-ghost btn-sm" type="button" id="jn-out">登出</button></div>
+        </form>
+      </div>`);
+    const f = document.getElementById("jn-form");
+    f.querySelector("#jn-name").focus();
+    document.getElementById("jn-out").addEventListener("click", async () => { await DB.auth.logout(); Router.go("shop"); });
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      busy(f.querySelector("button[type=submit]"), async () => {
+        const u = await DB.auth.join({ name: f.querySelector("#jn-name").value, phone: f.querySelector("#jn-phone").value });
+        toast(`歡迎加入，${u.name}`); Router.go("shop/account");
+      });
+    });
+  }
+
+  function viewForgot() {
+    shell(`
+      <div class="s-wrap s-page s-narrow">
+        <h1>忘記密碼</h1>
+        <form class="s-box" id="fg-form" novalidate>
+          <p style="margin:0;color:var(--s-muted)">輸入註冊用的 Email，我們會寄一封重設密碼的信給你。</p>
+          <div class="field"><label for="fg-email">Email</label><input type="email" id="fg-email" autocomplete="email"></div>
+          <button class="btn btn-primary" type="submit" style="padding:11px">寄出重設信</button>
+          <div class="s-links"><a href="#shop/login">回到登入</a></div>
+        </form>
+      </div>`);
+    const f = document.getElementById("fg-form");
+    f.querySelector("#fg-email").focus();
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      busy(f.querySelector("button[type=submit]"), async () => {
+        await DB.auth.requestReset(f.querySelector("#fg-email").value);
+        // 不透露這個 Email 有沒有註冊過
+        f.innerHTML = `<h2>請到信箱收信</h2><p style="margin:0;color:var(--s-muted)">如果這個 Email 有註冊，幾分鐘內會收到重設密碼的信。請在<b>同一個瀏覽器</b>打開信裡的連結。</p>
+          <div class="s-links"><a href="#shop/login">回到登入</a></div>`;
+      });
+    });
+  }
+
+  function viewReset() {
+    if (!DB.auth.session()) {
+      return shell(`<div class="s-wrap s-page s-narrow"><div class="s-box"><div class="empty">重設密碼連結已失效，請重新申請。
+        <div style="margin-top:12px"><a class="btn btn-primary" href="#shop/forgot">重新申請</a></div></div></div></div>`);
+    }
+    shell(`
+      <div class="s-wrap s-page s-narrow">
+        <h1>設定新密碼</h1>
+        <form class="s-box" id="rs-form" novalidate>
+          <div class="field"><label for="rs-pw">新密碼</label><input type="password" id="rs-pw" autocomplete="new-password"><span class="hint">至少 8 個字元</span></div>
+          <button class="btn btn-primary" type="submit" style="padding:11px">儲存新密碼</button>
+        </form>
+      </div>`);
+    const f = document.getElementById("rs-form");
+    f.querySelector("#rs-pw").focus();
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      busy(f.querySelector("button[type=submit]"), async () => {
+        await DB.auth.setNewPassword(f.querySelector("#rs-pw").value);
+        toast("密碼已更新"); Router.go(DB.auth.current() ? "shop/account" : "shop/join");
+      });
+    });
+  }
+
   /* ---------- 會員中心 ---------- */
   function viewAccount() {
     const u = DB.auth.current();
-    if (!u) { afterLogin = "shop/account"; return Router.go("shop/login"); }
+    if (!u) {
+      if (DB.auth.session && DB.auth.session()) return Router.go("shop/join");   // 登入了但還沒填會員資料
+      afterLogin = "shop/account"; return Router.go("shop/login");
+    }
+    const emailMode = DB.auth.mode === "email";
     const list = DB.orders.mine();
     const lv = DB.tiers.of(u.id);
     const cfg = DB.tiers.get();
@@ -563,26 +711,34 @@
             ${tierCard}
             <form class="s-box" id="ac-profile" novalidate>
               <h2>會員資料</h2>
+              ${emailMode ? `
+              <div class="field"><label>Email（帳號）</label><div>${esc(u.email)}</div></div>
+              <div class="field"><label for="ac-name">姓名</label><input type="text" id="ac-name" value="${esc(u.name)}" autocomplete="name"></div>
+              <div class="field"><label for="ac-phone">手機</label><input type="tel" id="ac-phone" value="${esc(u.phone || "")}" autocomplete="tel"></div>` : `
               <div class="field"><label>手機（帳號）</label><div class="mono">${esc(u.phone)}</div></div>
               <div class="field"><label for="ac-name">姓名</label><input type="text" id="ac-name" value="${esc(u.name)}" autocomplete="name"></div>
-              <div class="field"><label for="ac-email">Email</label><input type="email" id="ac-email" value="${esc(u.email || "")}" autocomplete="email"></div>
+              <div class="field"><label for="ac-email">Email</label><input type="email" id="ac-email" value="${esc(u.email || "")}" autocomplete="email"></div>`}
               <button class="btn" type="submit">儲存資料</button>
             </form>
             <form class="s-box" id="ac-pw" novalidate>
               <h2>變更密碼</h2>
               <div class="field"><label for="ac-old">目前密碼</label><input type="password" id="ac-old" autocomplete="current-password"></div>
-              <div class="field"><label for="ac-new">新密碼</label><input type="password" id="ac-new" autocomplete="new-password"><span class="hint">至少 8 個字元，要有英文字母和數字</span></div>
+              <div class="field"><label for="ac-new">新密碼</label><input type="password" id="ac-new" autocomplete="new-password"><span class="hint">${emailMode ? "至少 8 個字元" : "至少 8 個字元，要有英文字母和數字"}</span></div>
               <button class="btn" type="submit">變更密碼</button>
             </form>
           </div>
         </div>
       </div>`);
-    document.getElementById("ac-out").addEventListener("click", () => { DB.auth.logout(); toast("已登出"); Router.go("shop"); });
+    document.getElementById("ac-out").addEventListener("click", async () => { await DB.auth.logout(); toast("已登出"); Router.go("shop"); });
     const pf = document.getElementById("ac-profile");
     pf.addEventListener("submit", e => {
       e.preventDefault();
-      try { DB.auth.updateProfile({ name: pf.querySelector("#ac-name").value, email: pf.querySelector("#ac-email").value }); toast("已儲存資料"); viewAccount(); }
-      catch (err) { toast(err.message, "error"); }
+      busy(pf.querySelector("button[type=submit]"), async () => {
+        await DB.auth.updateProfile(emailMode
+          ? { name: pf.querySelector("#ac-name").value, phone: pf.querySelector("#ac-phone").value }
+          : { name: pf.querySelector("#ac-name").value, email: pf.querySelector("#ac-email").value });
+        toast("已儲存資料"); viewAccount();
+      });
     });
     const pw = document.getElementById("ac-pw");
     pw.addEventListener("submit", e => {
@@ -700,9 +856,12 @@
       case "cart": return viewCart();
       case "checkout": return viewCheckout();
       case "done": return viewDone(arg);
-      case "login": case "register": case "account":
+      case "login": case "register": case "account": case "join": case "forgot": case "reset":
         if (!DB.features.members) return membersSoon();
-        return page === "login" ? viewLogin() : page === "register" ? viewRegister() : viewAccount();
+        if (DB.auth.mode === "email") {
+          return { login: viewLoginEmail, register: viewRegisterEmail, account: viewAccount, join: viewJoin, forgot: viewForgot, reset: viewReset }[page]();
+        }
+        return page === "login" ? viewLogin() : page === "register" ? viewRegister() : page === "account" ? viewAccount() : viewHome();
       case "track": return viewTrack();
       case "order": return viewMyOrder(arg);
       default: return viewHome();

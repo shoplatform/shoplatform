@@ -51,7 +51,7 @@
             ${link("admin/settings", "settings", "設定")}
           </nav>
           <div class="side-foot">
-            <div>${DB.mode === "remote" ? "v0.7 · 資料庫已連線" : "v0.7 · 離線示範版"}</div>
+            <div>${DB.mode === "remote" ? "v0.8 · 資料庫已連線" : "v0.8 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}</div>` : ""}
             ${DB.mode === "remote" ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -215,7 +215,7 @@
                 <b>點這裡選擇圖片</b>
                 <span>或把圖片拖曳進來 · JPG、PNG、WebP · 最多 ${DB.media.MAX_PER_PRODUCT} 張</span>
               </label>
-              <p class="small muted" style="margin:0">第一張是主圖（列表和購物車會顯示）。圖片會自動縮小壓縮，按「儲存」後才會生效。</p>
+              <p class="small muted" style="margin:0">第一張是主圖（列表和購物車會顯示）。圖片會自動縮小壓縮${DB.mode === "remote" ? "、上傳到雲端" : ""}，按「儲存」後才會生效。</p>
               <div style="display:grid;gap:6px">
                 <div class="small muted" id="pe-usage"></div>
                 <div class="meter" id="pe-meter"><i></i></div>
@@ -272,8 +272,9 @@
       drawUsage();
     }
     function drawUsage() {
-      // 估算：已儲存的資料 + 這次新加、還沒儲存的圖片
+      // 估算：已儲存的資料 + 這次新加、還沒儲存的圖片（雲端版沒有這個限制，不顯示）
       const u = DB.media.usage();
+      if (!u) { document.getElementById("pe-usage").parentElement.hidden = true; return; }
       const saved = new Set((p.images || []).map(x => x.id));
       const pending = draft.images.filter(x => !saved.has(x.id)).reduce((s, x) => s + x.url.length, 0);
       const ratio = Math.min(1, (u.used + pending) / u.budget);
@@ -757,9 +758,9 @@
       rows.push({ name: "", minSpend: last.minSpend ? last.minSpend * 2 : 3000, percent: Math.max(80, last.percent - 5), freeShip: false });
       draw(); document.getElementById(`tr-name-${rows.length - 1}`).focus();
     });
-    document.getElementById("tr-save").addEventListener("click", () => {
+    document.getElementById("tr-save").addEventListener("click", async () => {
       try {
-        DB.tiers.save({ enabled: document.getElementById("tr-on").checked, period: document.getElementById("tr-period").value, tiers: rows });
+        await DB.tiers.save({ enabled: document.getElementById("tr-on").checked, period: document.getElementById("tr-period").value, tiers: rows });
         toast("已儲存會員等級"); viewTiers();
       } catch (err) { toast(err.message, "error"); }
     });
@@ -784,7 +785,9 @@
           <div class="panel-body"><dl class="kv">
             <dt>帳號</dt><dd>${accountPill(c)}${c.hasAccount ? ` <span class="small muted">${date(c.registeredAt)} 開通</span>` : ""}</dd>
             <dt>手機</dt><dd class="mono">${esc(c.phone)}</dd><dt>Email</dt><dd>${esc(c.email) || "—"}</dd></dl>
-          ${c.hasAccount ? "" : `<p class="small muted" style="margin:0">這位顧客是結帳時自動建立的。他用同一支手機在前台註冊後，就能登入看到這些訂單。</p>`}</div>
+          ${c.hasAccount ? "" : `<p class="small muted" style="margin:0">這位顧客是結帳時自動建立的。${DB.mode === "remote"
+            ? "他用下單時填的同一個 Email 在前台註冊會員後，這些訂單會自動接到他的帳號。"
+            : "他用同一支手機在前台註冊後，就能登入看到這些訂單。"}</p>`}</div>
         </section>
         ${lv ? `<section class="panel"><div class="panel-head"><h2>會員等級</h2>${tierPill(lv)}</div>
           <div class="panel-body">
@@ -1184,10 +1187,10 @@
     wrap.querySelector("#aj-cancel").addEventListener("click", close);
     wrap.addEventListener("click", e => { if (e.target === wrap) close(); });
     f.querySelector("#aj-qty").select();
-    f.addEventListener("submit", e => {
+    f.addEventListener("submit", async e => {
       e.preventDefault();
       try {
-        const res = DB.inventory.adjust(variantId, { mode: mode(), qty: f.querySelector("#aj-qty").value, reason: f.querySelector("#aj-reason").value, note: f.querySelector("#aj-note").value });
+        const res = await DB.inventory.adjust(variantId, { mode: mode(), qty: f.querySelector("#aj-qty").value, reason: f.querySelector("#aj-reason").value, note: f.querySelector("#aj-note").value });
         close(); toast(`庫存已調整為 ${res.stock}（${signed(res.delta)}）`); after();
       } catch (err) { toast(err.message, "error"); }
     });
@@ -1359,20 +1362,20 @@
     });
     linesEl.addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (b) { draft.items.splice(+b.dataset.del, 1); drawLines(); } });
     const collect = () => ({ id: po ? po.id : undefined, supplierId: document.getElementById("pf-sup").value, expectedAt: document.getElementById("pf-exp").value, note: document.getElementById("pf-note").value, items: draft.items });
-    document.getElementById("pf-save").addEventListener("click", () => {
-      try { const s = DB.purchases.save(collect()); toast("已儲存草稿"); Router.go("admin/purchase/" + s.id); }
+    document.getElementById("pf-save").addEventListener("click", async () => {
+      try { const s = await DB.purchases.save(collect()); toast("已儲存草稿"); Router.go("admin/purchase/" + s.id); }
       catch (err) { toast(err.message, "error"); }
     });
     document.getElementById("pf-place").addEventListener("click", async () => {
       try {
-        const s = DB.purchases.save(collect());
+        const s = await DB.purchases.save(collect());
         if (!await confirmBox({ title: `送出 ${s.number}？`, body: `向「${s.supplierName}」下單 ${s.items.reduce((a, it) => a + it.qty, 0)} 件，金額 ${money(s.total)}。下單後品項不能再改，貨到了再到這張單按「入庫」。`, ok: "確認下單" })) return Router.go("admin/purchase/" + s.id);
-        DB.purchases.place(s.id); toast("已下單"); Router.go("admin/purchase/" + s.id);
+        await DB.purchases.place(s.id); toast("已下單"); Router.go("admin/purchase/" + s.id);
       } catch (err) { toast(err.message, "error"); }
     });
     const del = document.getElementById("pf-del");
     if (del) del.addEventListener("click", async () => {
-      if (await confirmBox({ title: `刪除草稿 ${po.number}？`, ok: "刪除", danger: true })) { DB.purchases.remove(po.id); toast("已刪除"); Router.go("admin/purchases"); }
+      if (await confirmBox({ title: `刪除草稿 ${po.number}？`, ok: "刪除", danger: true })) { try { await DB.purchases.remove(po.id); toast("已刪除"); Router.go("admin/purchases"); } catch (err) { toast(err.message, "error"); } }
     });
   }
 
@@ -1429,14 +1432,14 @@
       const n = Object.values(qtys).reduce((s, x) => s + x, 0);
       if (n <= 0) return toast("請填這次收到的數量", "error");
       if (!await confirmBox({ title: `入庫 ${n} 件？`, body: "庫存會立刻增加，入庫後不能撤回（數量有誤請用庫存調整）。", ok: "確認入庫" })) return;
-      try { DB.purchases.receive(po.id, qtys, document.getElementById("rc-note").value.trim()); toast(`已入庫 ${n} 件`); viewPurchase(po.id); }
+      try { await DB.purchases.receive(po.id, qtys, document.getElementById("rc-note").value.trim()); toast(`已入庫 ${n} 件`); viewPurchase(po.id); }
       catch (err) { toast(err.message, "error"); }
     });
     const cancel = document.getElementById("pv-cancel");
     if (cancel) cancel.addEventListener("click", async () => {
       const partial = po.status === "partial";
       if (!await confirmBox({ title: partial ? "剩下的不收了？" : `取消 ${po.number}？`, body: partial ? "已經收到的保留，沒收到的數量從這張單移除，單子改為已入庫。" : "還沒入庫，取消不會影響庫存。", ok: partial ? "確認" : "取消進貨單", danger: !partial })) return;
-      try { DB.purchases.cancel(po.id); toast(partial ? "已結案" : "已取消"); viewPurchase(po.id); }
+      try { await DB.purchases.cancel(po.id); toast(partial ? "已結案" : "已取消"); viewPurchase(po.id); }
       catch (err) { toast(err.message, "error"); }
     });
   }
@@ -1487,16 +1490,16 @@
     const val = k => document.getElementById("sp-" + k).value;
     const poBtn = document.getElementById("sp-po");
     if (poBtn) poBtn.addEventListener("click", () => { poPreset = s.id; });
-    document.getElementById("sp-save").addEventListener("click", () => {
+    document.getElementById("sp-save").addEventListener("click", async () => {
       try {
-        const saved = DB.suppliers.save({ id: s.id, name: val("name"), contact: val("contact"), phone: val("phone"), email: val("email"), taxId: val("taxId"), address: val("address"), note: val("note") });
+        const saved = await DB.suppliers.save({ id: s.id, name: val("name"), contact: val("contact"), phone: val("phone"), email: val("email"), taxId: val("taxId"), address: val("address"), note: val("note") });
         toast("已儲存供應商"); Router.go("admin/supplier/" + saved.id);
       } catch (err) { toast(err.message, "error"); }
     });
     const del = document.getElementById("sp-del");
     if (del) del.addEventListener("click", async () => {
       if (!await confirmBox({ title: `刪除「${s.name}」？`, body: "過去的進貨單會保留供應商名稱。", ok: "刪除", danger: true })) return;
-      try { DB.suppliers.remove(s.id); toast("已刪除"); Router.go("admin/suppliers"); } catch (err) { toast(err.message, "error"); }
+      try { await DB.suppliers.remove(s.id); toast("已刪除"); Router.go("admin/suppliers"); } catch (err) { toast(err.message, "error"); }
     });
   }
 

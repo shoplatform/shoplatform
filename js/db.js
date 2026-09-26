@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版）
+ * db.js — 資料層（Supabase 資料庫版，v0.8）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -10,13 +10,18 @@
  * ========================================================= */
 (function () {
   const cfg = window.SHOP_CONFIG || {};
-  const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, {
-    auth: { persistSession: true, autoRefreshToken: true, storageKey: "shopPlatform.auth." + cfg.storeSlug },
-  });
   const SLUG = cfg.storeSlug;
+  // 商家後台和前台顧客分成兩個登入狀態，互不影響（店主去逛前台不會被當成顧客，反之亦然）
+  const mkClient = key => window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, flowType: "pkce", storageKey: `shopPlatform.${key}.${SLUG}` },
+  });
+  const sbAdmin = mkClient("admin");
+  const sbShop = mkClient("shop");
+  const IMAGE_BUCKET = "product-images";
+  const baseUrl = () => location.origin + location.pathname;
 
-  // 第一階段還沒搬到資料庫的功能（頁面會顯示「第二階段開放」）
-  const features = { members: false, images: false, inventory: false, tiers: false, reset: false };
+  // memberAuth：前台會員用 Email 帳號（離線示範版用手機）
+  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email" };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const listeners = [];
@@ -35,23 +40,59 @@
     if (/Password should be at least/i.test(m)) return "密碼至少 6 個字元";
     if (/rate limit/i.test(m)) return "寄信次數超過上限，請過一小時再試";
     if (/Unable to validate email|invalid format/i.test(m)) return "Email 格式不正確";
+    if (/New password should be different/i.test(m)) return "新密碼不能和舊密碼一樣";
+    if (/row-level security|Unauthorized/i.test(m)) return "沒有權限上傳，請重新登入後台";
+    if (/exceeded the maximum allowed size|Payload too large/i.test(m)) return "圖片太大（上限 2MB）";
+    if (/mime type/i.test(m)) return "只能上傳 JPG、PNG、WebP 圖片";
     if (/permission denied|JWT|not authorized/i.test(m)) return "沒有權限，請重新登入";
     return m || "發生錯誤，請再試一次";
   }
-  async function rpc(fn, args) {
+  async function call(client, fn, args) {
     let r;
-    try { r = await sb.rpc(fn, args || {}); } catch (e) { throw new Error(friendly(e)); }
+    try { r = await client.rpc(fn, args || {}); } catch (e) { throw new Error(friendly(e)); }
     if (r.error) throw new Error(friendly(r.error));
     return r.data;
   }
+  const rpc = (fn, args) => call(fn.startsWith("admin_") ? sbAdmin : sbShop, fn, args);
+
+  /* ---------- 從 Email 連結回來（確認信、重設密碼）----------
+   * 連結會帶 ?code=...&next=admin|shop|reset，用發出請求的那個登入狀態換成登入 */
+  let notice = null;
+  const takeNotice = () => { const n = notice; notice = null; return n; };
+  let landing = null;
+  // 網站一打開先處理 Email 連結，再決定要顯示前台還是後台
+  const boot = () => (landing = landing || handleLanding().catch(() => {}));
+  async function handleLanding() {
+    const qs = new URLSearchParams(location.search);
+    const next = qs.get("next");
+    if (!next || !(qs.get("code") || qs.get("error_description") || qs.get("error"))) return;
+    let hash = next === "admin" ? "#admin" : next === "reset" ? "#shop/reset" : "#shop/account";
+    try {
+      if (qs.get("error_description") || qs.get("error")) throw new Error(qs.get("error_description") || qs.get("error"));
+      const client = next === "admin" ? sbAdmin : sbShop;
+      const r = await client.auth.exchangeCodeForSession(qs.get("code"));
+      if (r.error) throw r.error;
+      notice = { kind: "ok", text: next === "reset" ? "請設定新密碼" : "Email 已確認，歡迎！" };
+    } catch (e) {
+      // 常見原因：在另一個瀏覽器／手機打開確認信。信箱其實已經確認，直接登入就好
+      notice = next === "reset"
+        ? { kind: "error", text: "重設密碼連結已失效，或是在不同的瀏覽器打開。請在同一個瀏覽器重新申請一次。" }
+        : { kind: "ok", text: "Email 已確認，請用剛剛的 Email 和密碼登入" };
+      if (next === "reset") hash = "#shop/forgot";
+      else if (next === "shop") hash = "#shop/login";
+    }
+    history.replaceState(null, "", baseUrl() + hash);
+    if (window.UI && window.UI.Router) window.UI.Router.current = hash.slice(1);
+  }
 
   /* ---------- 快取：前台（公開目錄）與後台（整家店）分開 ---------- */
-  const cache = { shop: null, admin: null };
+  const cache = { shop: null, admin: null, member: null, myOrders: [] };
   let side = "shop";
   const C = () => cache[side] || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
-      categories: [], products: [], customers: [], orders: [], coupons: [], promotions: [], store: {}, loadedAt: 0 };
+      categories: [], products: [], customers: [], orders: [], coupons: [], promotions: [], store: {},
+      memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }
   // 規格的 options 依照商品規格順序重排（資料庫存的 JSON 不保留欄位順序）
   function normalize(data) {
@@ -73,6 +114,14 @@
     const d = normalize(await rpc("shop_catalog", { p_slug: SLUG }));
     cache.shop = Object.assign(empty(), d, { loadedAt: Date.now() });
   }
+  // 前台會員：有登入就載入會員資料和訂單
+  async function loadMember() {
+    const { data } = await sbShop.auth.getSession();
+    shopUser = data && data.session ? data.session.user : null;
+    if (!shopUser) { cache.member = null; cache.myOrders = []; return; }
+    cache.member = await rpc("shop_member_me", { p_slug: SLUG });
+    cache.myOrders = cache.member ? await rpc("shop_my_orders", { p_slug: SLUG }) : [];
+  }
   async function loadAdmin() {
     const d = normalize(await rpc("admin_bootstrap", { p_store: adminStore.id }));
     cache.admin = Object.assign(empty(), d, { loadedAt: Date.now() });
@@ -80,38 +129,41 @@
   }
 
   /* ---------- 後台登入 ---------- */
-  let adminStore = null, adminUser = null;
+  let adminStore = null, adminUser = null, shopUser = null;
   const admin = {
     user: () => adminUser && { email: adminUser.email, id: adminUser.id },
     store: () => adminStore,
     async login(email, password) {
-      const r = await sb.auth.signInWithPassword({ email: String(email || "").trim(), password });
+      const r = await sbAdmin.auth.signInWithPassword({ email: String(email || "").trim(), password });
       if (r.error) throw new Error(friendly(r.error));
       adminUser = r.data.user; adminStore = null; cache.admin = null;
     },
     /* 回傳 { needConfirm: true } 代表要先去信箱點確認連結 */
     async signup(email, password) {
-      const r = await sb.auth.signUp({ email: String(email || "").trim(), password,
-        options: { emailRedirectTo: location.href.split("#")[0] + "#admin" } });
+      const r = await sbAdmin.auth.signUp({ email: String(email || "").trim(), password,
+        options: { emailRedirectTo: baseUrl() + "?next=admin" } });
       if (r.error) throw new Error(friendly(r.error));
       if (r.data.session) { adminUser = r.data.user; return { needConfirm: false }; }
       return { needConfirm: true };
     },
     async logout() {
-      await sb.auth.signOut().catch(() => {});
+      await sbAdmin.auth.signOut({ scope: "local" }).catch(() => {});
       adminUser = null; adminStore = null; cache.admin = null;
     },
     refresh: () => loadAdmin(),
   };
 
   /* 進入頁面前呼叫。回傳 {state}：ok／login（要登入）／nostore（登入了但不是店主） */
+  let memberLoaded = false;
   async function ready(which) {
+    await boot();
     side = which === "admin" ? "admin" : "shop";
     if (side === "shop") {
       if (!cache.shop || Date.now() - cache.shop.loadedAt > 60000) await loadShop();
+      if (!memberLoaded) { await loadMember(); await autoJoin(); memberLoaded = true; }
       return { state: "ok" };
     }
-    const { data } = await sb.auth.getSession();
+    const { data } = await sbAdmin.auth.getSession();
     const sess = data && data.session;
     if (!sess) { adminUser = null; return { state: "login" }; }
     adminUser = sess.user;
@@ -143,12 +195,61 @@
     productCount: id => C().products.filter(p => p.categoryIds.includes(id)).length,
   };
 
-  /* ---------- 商品圖片（第二階段） ---------- */
+  /* ---------- 商品圖片：縮小後上傳到 Supabase Storage ----------
+   * 路徑：<商店編號>/<隨機名稱>.jpg；只有這家店的管理者能上傳（權限在 schema.sql） */
+  const uid = p => p + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const media = {
     MAX_PER_PRODUCT: 8,
-    async prepare() { throw new Error("商品圖片上傳會在第二階段開放"); },
-    usage: () => ({ used: 0, budget: 1, ratio: 0 }),
+    MAX_SOURCE_MB: 15,
+    ACCEPT: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+    async prepare(file) {
+      if (!file || !media.ACCEPT.includes(file.type)) throw new Error(`「${file && file.name}」不是支援的圖片格式（JPG、PNG、WebP、GIF）`);
+      if (file.size > media.MAX_SOURCE_MB * 1024 * 1024) throw new Error(`「${file.name}」超過 ${media.MAX_SOURCE_MB}MB`);
+      const bmp = await decode(file);
+      let out = await toJpegBlob(bmp, 1200, 0.82);
+      if (out.blob.size > 400000) out = await toJpegBlob(bmp, 1000, 0.75);
+      if (bmp.close) bmp.close();
+      const id = uid("img");
+      const path = `${adminStore.id}/${id}.jpg`;
+      const r = await sbAdmin.storage.from(IMAGE_BUCKET).upload(path, out.blob, { contentType: "image/jpeg", cacheControl: "31536000", upsert: false });
+      if (r.error) throw new Error(friendly(r.error));
+      const url = sbAdmin.storage.from(IMAGE_BUCKET).getPublicUrl(path).data.publicUrl;
+      return { id, url, path, width: out.width, height: out.height, name: file.name };
+    },
+    usage: () => null,   // 雲端儲存不用顯示瀏覽器容量
+    async removeFiles(paths) {
+      paths = (paths || []).filter(Boolean);
+      if (!paths.length) return;
+      await sbAdmin.storage.from(IMAGE_BUCKET).remove(paths).catch(() => {});
+    },
   };
+  async function decode(file) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(file, { imageOrientation: "from-image" }); } catch (e) { /* 改用 <img> */ }
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      return await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error(`「${file.name}」無法讀取，檔案可能損壞`));
+        im.src = url;
+      });
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  }
+  function toJpegBlob(src, maxEdge, quality) {
+    const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
+    const scale = Math.min(1, maxEdge / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, w, h);
+    return new Promise((resolve, reject) => cv.toBlob(b => b ? resolve({ blob: b, width: w, height: h }) : reject(new Error("圖片轉檔失敗")), "image/jpeg", quality));
+  }
 
   /* ---------- 商品 ---------- */
   const products = {
@@ -174,6 +275,7 @@
       const payload = {
         id: input.id || null, name: input.name.trim(), description: input.description || "", status: input.status,
         color: input.color || "", categoryIds: input.categoryIds || [], options: input.options || [],
+        images: (input.images || []).map(im => ({ id: im.id, url: im.url, path: im.path, width: im.width, height: im.height })),
         variants: input.variants.map(v => ({
           id: v.id && !String(v.id).startsWith("new_") ? v.id : null,
           sku: v.sku, options: v.options, price: Math.floor(v.price), cost: Math.max(0, Math.round(+v.cost || 0)),
@@ -181,10 +283,18 @@
         })),
       };
       const id = await rpc("admin_save_product", { p_store: adminStore.id, p_product: payload });
+      // 儲存成功後，把這次拿掉的圖片從雲端刪掉
+      const keep = new Set(payload.images.map(im => im.path));
+      await media.removeFiles(((original && original.images) || []).map(im => im.path).filter(pth => pth && !keep.has(pth)));
       await afterWrite();
       return products.get(id);
     },
-    async remove(id) { await rpc("admin_delete_product", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
+    async remove(id) {
+      const p = C().products.find(x => x.id === id);
+      await rpc("admin_delete_product", { p_store: adminStore.id, p_id: id });
+      await media.removeFiles(((p && p.images) || []).map(im => im.path));
+      await afterWrite();
+    },
     cover: p => (p.images && p.images[0] ? p.images[0].url : ""),
     totalStock: p => p.variants.reduce((s, v) => s + v.stock, 0),
     priceRange(p) { const prices = p.variants.map(v => v.price); return [Math.min(...prices), Math.max(...prices)]; },
@@ -215,17 +325,196 @@
     },
   };
 
-  /* ---------- 前台會員帳號（第二階段） ---------- */
-  const notYet = async () => { throw new Error("會員功能會在第二階段開放"); };
-  const auth = { current: () => null, hasAccount: () => false, requestCode: notYet, register: notYet, login: notYet, logout: () => {}, updateProfile: notYet, changePassword: notYet };
+  const notYet = async () => { throw new Error("這個功能在資料庫版還沒開放"); };
 
-  /* ---------- 會員等級（第二階段） ---------- */
-  const tiers = { get: () => ({ enabled: false, period: "all", tiers: [] }), of: () => null, benefit: () => "", save: notYet, spentOf: () => 0 };
+  /* ---------- 前台會員（Email 帳號） ----------
+   * 註冊 → 到信箱點確認連結 → 回到網站自動登入 → 加入這家店的會員（姓名、手機）
+   * 以前用同一個 Email 下過的訂單會自動接上 */
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  // 註冊時填的姓名、手機存在帳號資料裡，第一次登入（或點確認信回來）時自動加入會員
+  async function autoJoin() {
+    if (!shopUser || cache.member) return;
+    const meta = shopUser.user_metadata || {};
+    if (!meta.name || !meta.phone) return;
+    try { cache.member = await rpc("shop_member_join", { p_slug: SLUG, p_name: meta.name, p_phone: meta.phone }); cache.myOrders = await rpc("shop_my_orders", { p_slug: SLUG }); }
+    catch (e) { /* 資料不完整就讓使用者自己補 */ }
+  }
+  async function afterShopLogin() {
+    await loadMember();
+    await autoJoin();
+    notify();
+  }
+  const auth = {
+    mode: "email",
+    current: () => (cache.member ? clone(cache.member) : null),
+    session: () => (shopUser ? { email: shopUser.email } : null),   // 已登入但還沒完成會員資料
+    hasAccount: () => false,
+    async signup({ email, password, name, phone }) {
+      email = String(email || "").trim(); name = String(name || "").trim(); phone = String(phone || "").replace(/[\s-]/g, "");
+      if (!EMAIL_RE.test(email)) throw new Error("Email 格式不正確");
+      if (!name) throw new Error("請填寫姓名");
+      if (!/^09\d{8}$/.test(phone)) throw new Error("手機格式應為 09 開頭共 10 碼");
+      if (String(password || "").length < 8) throw new Error("密碼至少 8 個字元");
+      const r = await sbShop.auth.signUp({ email, password, options: { data: { name, phone }, emailRedirectTo: baseUrl() + "?next=shop" } });
+      if (r.error) throw new Error(friendly(r.error));
+      if (r.data.session) { await afterShopLogin(); return { needConfirm: false }; }
+      return { needConfirm: true };
+    },
+    async login(email, password) {
+      const r = await sbShop.auth.signInWithPassword({ email: String(email || "").trim(), password });
+      if (r.error) throw new Error(friendly(r.error));
+      await afterShopLogin();
+      return auth.current();
+    },
+    async join({ name, phone }) {
+      cache.member = await rpc("shop_member_join", { p_slug: SLUG, p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
+      cache.myOrders = await rpc("shop_my_orders", { p_slug: SLUG });
+      notify();
+      return auth.current();
+    },
+    async logout() {
+      await sbShop.auth.signOut({ scope: "local" }).catch(() => {});
+      shopUser = null; cache.member = null; cache.myOrders = []; notify();
+    },
+    async updateProfile({ name, phone }) {
+      cache.member = await rpc("shop_member_update", { p_slug: SLUG, p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
+      notify();
+    },
+    async changePassword(oldPw, newPw) {
+      if (!shopUser) throw new Error("請先登入");
+      if (String(newPw || "").length < 8) throw new Error("新密碼至少 8 個字元");
+      const check = await sbShop.auth.signInWithPassword({ email: shopUser.email, password: oldPw });
+      if (check.error) throw new Error("目前的密碼不正確");
+      const r = await sbShop.auth.updateUser({ password: newPw });
+      if (r.error) throw new Error(friendly(r.error));
+    },
+    async requestReset(email) {
+      email = String(email || "").trim();
+      if (!EMAIL_RE.test(email)) throw new Error("Email 格式不正確");
+      const r = await sbShop.auth.resetPasswordForEmail(email, { redirectTo: baseUrl() + "?next=reset" });
+      if (r.error) throw new Error(friendly(r.error));
+    },
+    async setNewPassword(pw) {
+      if (String(pw || "").length < 8) throw new Error("密碼至少 8 個字元");
+      const { data } = await sbShop.auth.getSession();
+      if (!data || !data.session) throw new Error("重設密碼連結已失效，請重新申請");
+      const r = await sbShop.auth.updateUser({ password: pw });
+      if (r.error) throw new Error(friendly(r.error));
+      await afterShopLogin();
+    },
+  };
 
-  /* ---------- 進銷存（第二階段） ---------- */
-  const inventory = { MOVE_TYPES: {}, ADJUST_REASONS: [], list: () => [], summary: () => ({ skus: 0, units: 0, value: 0, low: 0, incoming: 0 }), adjust: notYet, movements: () => [] };
-  const suppliers = { list: () => [], get: () => null, save: notYet, remove: notYet };
-  const purchases = { STATUS: {}, list: () => [], get: () => null, countByStatus: () => ({ all: 0, draft: 0, ordered: 0, partial: 0, received: 0, cancelled: 0 }), save: notYet, place: notYet, receive: notYet, cancel: notYet, remove: notYet };
+  /* ---------- 會員等級 ----------
+   * 前台：目前會員的等級由資料庫算好（cache.member.level）
+   * 後台：從後台快取的訂單自己算（跟資料庫同一套規則） */
+  const COUNTED = ["paid", "shipped", "completed"];
+  const tiers = {
+    get: () => clone((side === "admin" && cache.admin ? cache.admin.memberTiers : (cache.shop || empty()).memberTiers) || { enabled: false, period: "all", tiers: [] }),
+    async save(cfg) { await rpc("admin_save_tiers", { p_store: adminStore.id, p_cfg: cfg }); await afterWrite(); },
+    spentOf(customerId) {
+      const cfgT = tiers.get();
+      const since = cfgT.period === "12m" ? Date.now() - 365 * 86400000 : -Infinity;
+      return C().orders.filter(o => o.customerId === customerId && COUNTED.includes(o.status) && new Date(o.createdAt).getTime() >= since)
+        .reduce((s, o) => s + o.total, 0);
+    },
+    of(customerId) {
+      if (side !== "admin") return cache.member && cache.member.level ? clone(cache.member.level) : null;
+      const cfgT = tiers.get();
+      if (!cfgT.enabled || !customerId) return null;
+      const spent = tiers.spentOf(customerId);
+      const list = cfgT.tiers.slice().sort((a, b) => a.minSpend - b.minSpend);
+      let idx = 0;
+      list.forEach((t, i) => { if (spent >= t.minSpend) idx = i; });
+      const next = list[idx + 1] || null;
+      return { tier: clone(list[idx]), index: idx, spent, next: next && clone(next), gap: next ? next.minSpend - spent : 0 };
+    },
+    benefit(t) {
+      const parts = [];
+      if (t.percent < 100) parts.push(`全館 ${t.percent % 10 === 0 ? t.percent / 10 : t.percent} 折`);
+      if (t.freeShip) parts.push("免運");
+      return parts.join("、") || "累積消費升級";
+    },
+  };
+
+  /* ---------- 進銷存：讀取從後台快取算，寫入呼叫資料庫 ---------- */
+  const MOVE_TYPES = { sale: "銷售", cancel: "取消加回", purchase: "進貨入庫", adjust: "盤點調整", edit: "商品頁修改", initial: "期初庫存" };
+  function incomingOf(variantId) {
+    return C().purchases.filter(po => po.status === "ordered" || po.status === "partial")
+      .reduce((s, po) => s + po.items.filter(it => it.variantId === variantId).reduce((a, it) => a + (it.qty - it.received), 0), 0);
+  }
+  const inventory = {
+    MOVE_TYPES,
+    ADJUST_REASONS: ["盤點差異", "損壞報廢", "樣品／贈品", "找回", "其他"],
+    list({ q = "", filter = "" } = {}) {
+      q = q.trim().toLowerCase();
+      const limit = C().settings.lowStockAlert;
+      const rows = [];
+      C().products.forEach(p => p.variants.forEach(v => {
+        rows.push({
+          productId: p.id, variantId: v.id, name: p.name, color: p.color, image: products.cover(p), status: p.status,
+          optionText: Object.values(v.options).join(" / "), sku: v.sku, price: v.price,
+          stock: v.stock, cost: v.cost || 0, value: v.stock * (v.cost || 0), incoming: incomingOf(v.id), low: v.stock <= limit,
+        });
+      }));
+      return rows.filter(r =>
+        (!q || r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q) || r.optionText.toLowerCase().includes(q)) &&
+        (filter !== "low" || r.low) && (filter !== "out" || r.stock === 0)
+      ).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant") || a.sku.localeCompare(b.sku));
+    },
+    summary() {
+      const rows = inventory.list();
+      return { skus: rows.length, units: rows.reduce((s, r) => s + r.stock, 0), value: rows.reduce((s, r) => s + r.value, 0),
+        low: rows.filter(r => r.low && r.status === "active").length, incoming: rows.reduce((s, r) => s + r.incoming, 0) };
+    },
+    async adjust(variantId, { mode, qty, reason, note }) {
+      const n = Math.floor(+qty);
+      if (!Number.isFinite(n)) throw new Error("請填數量");
+      const r = await rpc("admin_adjust_stock", { p_store: adminStore.id, p_variant: variantId, p_mode: mode, p_qty: n, p_reason: reason, p_note: note || "" });
+      await afterWrite();
+      return r;
+    },
+    movements({ q = "", type = "", variantId = "", limit = 500 } = {}) {
+      q = q.trim().toLowerCase();
+      return clone(C().movements.filter(m =>
+        (!type || m.type === type) && (!variantId || m.variantId === variantId) &&
+        (!q || m.name.toLowerCase().includes(q) || m.sku.toLowerCase().includes(q) || m.ref.toLowerCase().includes(q))
+      ).slice(-limit).reverse());
+    },
+  };
+  const suppliers = {
+    list() {
+      return clone(C().suppliers).map(x => {
+        const pos = C().purchases.filter(po => po.supplierId === x.id && po.status !== "cancelled");
+        return Object.assign(x, { poCount: pos.length, lastAt: pos.map(po => po.createdAt).sort().pop() || "" });
+      }).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+    },
+    get: id => { const x = C().suppliers.find(y => y.id === id); return x ? clone(x) : null; },
+    async save(input) { const id = await rpc("admin_save_supplier", { p_store: adminStore.id, p_supplier: input }); await afterWrite(); return suppliers.get(id); },
+    async remove(id) { await rpc("admin_delete_supplier", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
+  };
+  const PO_STATUS = { draft: "草稿", ordered: "已下單", partial: "部分入庫", received: "已入庫", cancelled: "已取消" };
+  const poTotal = po => po.items.reduce((s, it) => s + it.qty * it.cost, 0);
+  const purchases = {
+    STATUS: PO_STATUS,
+    list({ status = "", q = "" } = {}) {
+      q = q.trim().toLowerCase();
+      return clone(C().purchases.filter(po =>
+        (!status || po.status === status) &&
+        (!q || po.number.toLowerCase().includes(q) || po.supplierName.toLowerCase().includes(q) || po.items.some(it => it.name.toLowerCase().includes(q) || it.sku.toLowerCase().includes(q)))
+      ).sort((a, b) => b.createdAt.localeCompare(a.createdAt))).map(po => Object.assign(po, { total: poTotal(po) }));
+    },
+    get: id => { const po = C().purchases.find(x => x.id === id); return po ? Object.assign(clone(po), { total: poTotal(po) }) : null; },
+    countByStatus() {
+      const out = { all: C().purchases.length };
+      Object.keys(PO_STATUS).forEach(k => { out[k] = C().purchases.filter(po => po.status === k).length; });
+      return out;
+    },
+    async save(input) { const id = await rpc("admin_save_purchase", { p_store: adminStore.id, p_po: input }); await afterWrite(); return purchases.get(id); },
+    async place(id) { await rpc("admin_place_purchase", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
+    async receive(id, qtys, note) { await rpc("admin_receive_purchase", { p_store: adminStore.id, p_id: id, p_qtys: qtys, p_note: note || "" }); await afterWrite(); },
+    async cancel(id, note) { await rpc("admin_cancel_purchase", { p_store: adminStore.id, p_id: id, p_note: note || "" }); await afterWrite(); },
+    async remove(id) { await rpc("admin_delete_purchase", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
+  };
 
   /* ---------- 購物車（存在這個瀏覽器） ---------- */
   const CART_KEY = "shopPlatform.cart." + SLUG;
@@ -320,6 +609,7 @@
       guestPass[view.number] = { view, phone: contact.phone };
       cart.clear();
       await loadShop().catch(() => {}); // 更新庫存
+      if (cache.member) await loadMember().catch(() => {});
       return view;
     },
     async lookup(number, phone) {
@@ -330,13 +620,22 @@
       guestPass[view.number] = { view, phone };
       return view;
     },
-    mine: () => [],
-    forCustomer: number => (guestPass[number] ? clone(guestPass[number].view) : null),
+    mine: () => clone(cache.myOrders || []),
+    forCustomer(number) {
+      const m = (cache.myOrders || []).find(o => o.number === number);
+      if (m) return clone(m);
+      return guestPass[number] ? clone(guestPass[number].view) : null;
+    },
     async cancelByCustomer(number) {
-      const pass = guestPass[number];
-      if (!pass) throw new Error("找不到這筆訂單");
-      const view = await rpc("shop_cancel_order", { p_slug: SLUG, p_number: number, p_phone: pass.phone });
-      guestPass[number] = { view, phone: pass.phone };
+      if ((cache.myOrders || []).some(o => o.number === number)) {
+        await rpc("shop_member_cancel", { p_slug: SLUG, p_number: number });
+        await loadMember();
+      } else {
+        const pass = guestPass[number];
+        if (!pass) throw new Error("找不到這筆訂單");
+        const view = await rpc("shop_cancel_order", { p_slug: SLUG, p_number: number, p_phone: pass.phone });
+        guestPass[number] = { view, phone: pass.phone };
+      }
       await loadShop().catch(() => {});
     },
 
@@ -398,7 +697,7 @@
   }
 
   window.DB = {
-    mode: "remote", features, ready, admin,
+    mode: "remote", features, ready, admin, takeNotice, boot,
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
     inventory, suppliers, purchases,
     onChange: fn => listeners.push(fn),

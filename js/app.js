@@ -18,9 +18,11 @@
       clearTimeout(slow);
       if (my !== seq) return; // 使用者已經切到別頁
       document.title = (side === "shop" ? "商店前台" : "商家後台") + "｜" + (DB.settings.get().name || "開店平台");
-      if (side === "admin" && st.state !== "ok") { window.AdminGate(st); return; }
-      await (side === "shop" ? window.ShopApp(parts) : window.AdminApp(parts));
-      window.scrollTo(0, 0);
+      const note = DB.takeNotice && DB.takeNotice();
+      if (side === "admin" && st.state !== "ok") { window.AdminGate(st); }
+      else { await (side === "shop" ? window.ShopApp(parts) : window.AdminApp(parts)); window.scrollTo(0, 0); }
+      // Email 連結回來的提示（例如「信箱已確認」）
+      if (note) window.UI.toast(note.text, note.kind === "error" ? "error" : undefined);
     } catch (err) {
       clearTimeout(slow);
       if (my !== seq) return;
@@ -28,5 +30,6 @@
         <button class="btn" onclick="location.reload()">重新整理</button></div></div>`;
     }
   });
-  Router.start("admin");
+  // 從 Email 連結回來時，先換好登入狀態、改好網址，再開始顯示畫面
+  Promise.resolve(DB.boot && DB.boot()).then(() => Router.start("admin"), () => Router.start("admin"));
 })();

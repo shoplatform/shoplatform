@@ -1062,7 +1062,7 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}) };
 
   window.DB = {
-    mode: "local", features, ready, admin,
+    mode: "local", features, ready, admin, takeNotice: () => null,
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
     inventory, suppliers, purchases,
     onChange: fn => listeners.push(fn),

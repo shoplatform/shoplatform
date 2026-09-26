@@ -1,12 +1,43 @@
-# 開店平台 · v0.7（接上資料庫・第一階段）
+# 開店平台 · v0.8（接上資料庫・第二階段）
 
 零抽成、年費制的電商開店 SaaS 平台。
 （獨立專案，與金融工具無關。）
 
 - **`index.html`**：正式版，資料存在 Supabase 資料庫，任何裝置看到的都是同一份資料。
-- **`demo.html`**：離線示範版，資料只存在這個瀏覽器，功能全開（含還沒搬到資料庫的會員、圖片、進銷存）。
+- **`demo.html`**：離線示範版，資料只存在這個瀏覽器，不用網路也能玩。
 
-## v0.7 新增：接上 Supabase 資料庫（第一階段）
+## v0.8 新增：接上資料庫（第二階段）
+
+第一階段先隱藏的功能，現在正式版全部打開、資料都存在資料庫。
+
+- **顧客會員（Email＋密碼）**：前台註冊填 Email、姓名、手機、密碼 → 收確認信 → 點信裡的連結就回到網站、自動完成註冊。有「忘記密碼」（寄重設信）、會員中心可以改姓名／手機、變更密碼。
+- **舊訂單自動接上，但只認 Email**：以前沒登入、用同一個 Email 下過的訂單，註冊並確認信箱後會自動接到會員底下。只填同一支手機不會接上別人的訂單（防止冒用）。
+- **會員等級**：後台「行銷 → 會員等級」設定，存在資料庫。結帳金額一樣由伺服器算：商品小計 → 滿額活動 → 會員等級折扣 → 優惠碼 → 運費。
+- **商品圖片存雲端**：上傳到 Supabase Storage（`product-images`），不再受瀏覽器 5MB 限制。只有這家店的管理者能上傳、刪除；刪掉圖片或刪掉商品時，雲端檔案也會一起刪。每張圖最大 2MB（上傳前會自動縮小，一般照片不會超過）。
+- **進銷存**：庫存總覽、盤點調整、庫存異動紀錄、進貨單（含部分入庫、移動平均成本）、供應商，全部改存資料庫。庫存帳和每一筆異動對得起來。
+- **Email 連結**：確認信、重設密碼信的連結會帶 `?next=shop`／`?next=admin`／`?next=reset`，回到網站時自動登入並跳到對的頁面；連結過期或在別的瀏覽器打開，會提示該怎麼做。
+
+## 從 v0.7 升級（照順序做）
+
+1. **Supabase → SQL Editor → New query**：把新的 `supabase/schema.sql` 整份貼上，按 Run。看到「完成：資料庫是 v0.8 版」就好了。**原本的資料都會保留**（可以重複執行）。
+   如果又跳出「Potential issues detected」，一樣按「Run and enable RLS」。
+2. **Supabase → Authentication → URL Configuration**：確認 Redirect URLs 裡有 `https://shoplatform.github.io/shoplatform/**`（v0.7 設過就不用動）。
+3. **Supabase → Authentication → Sign In / Providers → Email**：「Confirm email」保持**打開**（舊訂單接上靠的就是信箱驗證）。
+4. **GitHub**：用 Upload files 把 `index.html`、`demo.html`、`README.md`、`css`、`js`、`supabase` 六樣拖進去覆蓋，按 Commit changes，等 1～2 分鐘。
+
+> **正式開放給顧客前要做：自訂寄信（SMTP）**。Supabase 內建的寄信服務只會寄給「專案成員」的信箱，而且每小時只能寄幾封，只適合自己測試。要讓一般顧客收得到確認信，要到 **Authentication → Emails → SMTP Settings** 接上寄信服務（例如 Resend、Brevo，有免費額度）。在那之前，可以先用你自己的 Email 測試會員註冊。
+
+## 第一次設定（全新的 Supabase 專案才需要）
+
+1. **Supabase → Authentication → URL Configuration**：Site URL 填 `https://shoplatform.github.io/shoplatform/`；Redirect URLs 加一筆 `https://shoplatform.github.io/shoplatform/**`。
+2. **Supabase → SQL Editor → New query**：把 `supabase/schema.sql` 整份貼上，按 Run。看到「完成：資料庫是 v0.8 版」就完成。
+3. **把檔案上傳到 GitHub**（見下方），等 1～2 分鐘。
+4. **打開網站的商家後台**（網址後面加 `#admin`）→「第一次使用？建立帳號」→ 用你的 Email 註冊 → 到信箱點確認連結（會直接回到後台）。
+5. 畫面會出現「還差一步：設定店主」，照畫面把那一行指令貼到 SQL Editor 執行，回來按「重新檢查」就進得去了。
+
+連線設定在 `js/config.js`：Supabase 網址、Publishable key（公開金鑰，本來就放在網頁裡）、商店代號。**不要把 Secret key／service_role 放進任何檔案。**
+
+## v0.7：接上 Supabase 資料庫（第一階段）
 
 - **資料放雲端**：商品、分類、設定、訂單、顧客、優惠券、滿額活動都存在 Supabase。手機下的單，電腦後台馬上看得到。
 - **商家後台要登入**：Email＋密碼。只有被設成「店主」的帳號能進後台；別人就算註冊了也看不到任何資料。
@@ -14,17 +45,6 @@
 - **不會超賣**：同時很多人搶最後幾件，只有庫存夠的訂單會成立（測過 8 人搶 3 件，剛好成立 3 張）。
 - **改庫存不會蓋掉剛賣掉的**：商品頁改庫存時，只送「這次改了多少」，這段時間顧客買走的數量不會被覆蓋。
 - **資料庫全部上鎖**：資料表不開放直接讀寫，只能透過 `supabase/schema.sql` 裡的函式；前台函式只回公開資訊（不含成本、商家備註、內部設定）。
-- **第二階段才開放**（正式版先隱藏，`demo.html` 仍可體驗）：前台會員登入與會員等級、商品圖片上傳、進銷存（庫存頁、進貨單、供應商）。
-
-## 第一次設定（只要做一次）
-
-1. **Supabase → Authentication → URL Configuration**：Site URL 填 `https://shoplatform.github.io/shoplatform/`；Redirect URLs 加一筆 `https://shoplatform.github.io/shoplatform/**`。
-2. **Supabase → SQL Editor → New query**：把 `supabase/schema.sql` 整份貼上，按 Run。看到「已建立範例商店「晨霧選物」」就完成。（可以重複執行，不會重複建資料。）
-3. **把檔案上傳到 GitHub**（見下方），等 1～2 分鐘。
-4. **打開網站的商家後台**（網址後面加 `#admin`）→「第一次使用？建立帳號」→ 用你的 Email 註冊 → 到信箱點確認連結 → 回來登入。
-5. 畫面會出現「還差一步：設定店主」，照畫面把那一行指令貼到 SQL Editor 執行，回來按「重新檢查」就進得去了。
-
-連線設定在 `js/config.js`：Supabase 網址、Publishable key（公開金鑰，本來就放在網頁裡）、商店代號。**不要把 Secret key／service_role 放進任何檔案。**
 
 ## v0.6 新增（進銷存）
 
@@ -94,7 +114,8 @@
 
 **刻意還沒做的**（照藍圖排在後面）
 - 金流、物流、電子發票串接 → 目前付款與出貨都由商家在後台手動確認
-- 簡訊驗證碼真的發送（目前示範模式）、忘記密碼
+- 顧客確認信的自訂寄信（SMTP，上線前設定）
+- 離線示範版的手機驗證碼仍是示範模式
 - 導購分潤、多商家註冊、年費計費
 
 ## 怎麼在自己電腦上打開
@@ -161,7 +182,7 @@ shop-platform/
 | 1b | 商品圖片上傳 | B1 | ✅ v0.2 |
 | 1b | 訂單匯出 Excel | B2-06 | ✅ v0.2 |
 | 1b | 前台會員登入、訂單查詢 | A2-01、A2-02 | ✅ v0.3 |
-| 2 | 換成真正的後端與資料庫 | D1-01 | ✅ v0.7 第一階段；第二階段：會員、圖片雲端、進銷存 |
+| 2 | 換成真正的後端與資料庫 | D1-01 | ✅ v0.7 第一階段、v0.8 第二階段（會員、圖片雲端、進銷存） |
 | 2 | 優惠券、滿額活動 | B4 | ✅ v0.4 |
 | 2 | 會員分級 | B3-02 | ✅ v0.5 |
 | 2 | 串接綠界金流、物流 | D1-02、D1-03 | |
