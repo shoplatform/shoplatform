@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.21 · 資料庫已連線" : "v0.21 · 離線示範版"}</div>
+            <div>${remote ? "v0.22 · 資料庫已連線" : "v0.22 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -1580,7 +1580,8 @@
   }
 
   /* ---------- 會員 ---------- */
-  let cq = "", ctier = "", cShow = 100;
+  let cq = "", ctier = "", cPage = 0;
+  const SERVER_PAGE = 100;
   // 等級標籤：第幾級決定顏色深淺
   const tierPill = lv => lv ? `<span class="tier-pill t${Math.min(lv.index, 4)}">${esc(lv.tier.name)}</span>` : "";
   function viewCustomers() {
@@ -1596,32 +1597,40 @@
         </div></div>
         <div id="c-list"></div>
       </section>`);
-    const draw = () => {
-      const list = DB.customers.list(cq).map(c => Object.assign(c, { level: DB.tiers.of(c.id) }))
-        .filter(c => !ctier || (c.level && c.level.tier.id === ctier));
-      const shown = list.slice(0, cShow);
-      document.getElementById("c-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
+    let request = 0;
+    const draw = async () => {
+      const el = document.getElementById("c-list");
+      if (!el) return;
+      const mine = ++request;
+      el.innerHTML = `<div class="empty">載入中…</div>`;
+      try {
+        const result = await DB.customers.query({ q: cq, tier: ctier }, { offset: cPage * SERVER_PAGE, limit: SERVER_PAGE });
+        if (mine !== request || !document.getElementById("c-list")) return;
+        const list = result.rows || [], total = +result.total || 0;
+        el.innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
         <thead><tr><th>姓名</th>${on ? "<th>等級</th>" : ""}<th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
-        <tbody>${shown.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
+        <tbody>${list.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
           <td>${esc(c.name)}</td>${on ? `<td>${tierPill(c.level)}</td>` : ""}<td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
           <td class="r num">${c.orderCount}</td><td class="r num">${money(c.totalSpent)}</td><td class="num">${date(c.lastOrderAt)}</td>
         </tr>`).join("")}</tbody></table></div>
-        <div class="pager"><span class="small muted">顯示 ${shown.length} / ${list.length} 位</span>${list.length > shown.length ? `<button class="btn btn-sm" type="button" id="c-more">再顯示 100 位</button>` : ""}</div>` : `<div class="empty">沒有符合的會員</div>`;
-      const more = document.getElementById("c-more");
-      if (more) more.addEventListener("click", () => { cShow += 100; draw(); });
+        <div class="pager"><span class="small muted">第 ${total ? cPage * SERVER_PAGE + 1 : 0}–${Math.min((cPage + 1) * SERVER_PAGE, total)} 位，共 ${total} 位</span><div class="actions"><button class="btn btn-sm" id="c-prev" ${cPage === 0 ? "disabled" : ""}>上一頁</button><button class="btn btn-sm" id="c-next" ${(cPage + 1) * SERVER_PAGE >= total ? "disabled" : ""}>下一頁</button></div></div>` : `<div class="empty">沒有符合的會員</div>`;
+        const prev = document.getElementById("c-prev"), next = document.getElementById("c-next");
+        if (prev) prev.addEventListener("click", () => { cPage--; draw(); });
+        if (next) next.addEventListener("click", () => { cPage++; draw(); });
+      } catch (err) { if (mine === request) el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
     };
     draw();
-    document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; cShow = 100; draw(); });
+    let timer;
+    document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; cPage = 0; clearTimeout(timer); timer = setTimeout(draw, 250); });
     const sel = document.getElementById("ctier");
-    if (sel) sel.addEventListener("change", e => { ctier = e.target.value; draw(); });
+    if (sel) sel.addEventListener("change", e => { ctier = e.target.value; cPage = 0; draw(); });
   }
 
   /* ---------- 會員等級設定 ---------- */
-  function viewTiers() {
+  async function viewTiers() {
     const cfg = DB.tiers.get();
     const rows = cfg.tiers.map(t => ({ ...t }));
-    const counts = {};
-    DB.customers.list().forEach(c => { const lv = DB.tiers.of(c.id); if (lv) counts[lv.tier.id] = (counts[lv.tier.id] || 0) + 1; });
+    const counts = await DB.customers.tierCounts();
     shell("tiers", `
       <div class="page-head"><h1>會員等級</h1><button class="btn btn-primary" id="tr-save">儲存</button></div>
       <div class="grid-2">
@@ -1691,8 +1700,8 @@
     });
   }
 
-  function viewCustomer(id) {
-    const c = DB.customers.get(id);
+  async function viewCustomer(id) {
+    const c = await DB.customers.fetch(id);
     if (!c) return notFound("找不到這位會員", "admin/customers");
     const lv = DB.tiers.of(c.id);
     shell("customers", `
@@ -2145,9 +2154,10 @@
   }
 
   /* ---------- 庫存異動紀錄 ---------- */
-  const mf = { q: "", type: "" };
+  const mf = { q: "", type: "", page: 0 };
   function viewMoves(variantId) {
     variantId = variantId || "";
+    mf.page = 0;
     const one = variantId ? DB.inventory.list().find(r => r.variantId === variantId) : null;
     const poId = {}; DB.purchases.list().forEach(po => { poId[po.number] = po.id; });
     shell("stock", `
@@ -2162,9 +2172,17 @@
         </div><span class="small muted">最新的在最上面</span></div>
         <div id="mf-list"></div>
       </section>`);
-    const draw = () => {
-      const list = DB.inventory.movements({ q: one ? "" : mf.q, type: mf.type, variantId });
-      document.getElementById("mf-list").innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
+    let request = 0;
+    const draw = async () => {
+      const el = document.getElementById("mf-list");
+      if (!el) return;
+      const mine = ++request;
+      el.innerHTML = `<div class="empty">載入中…</div>`;
+      try {
+        const result = await DB.inventory.queryMovements({ q: one ? "" : mf.q, type: mf.type, variantId }, { offset: mf.page * SERVER_PAGE, limit: SERVER_PAGE });
+        if (mine !== request || !document.getElementById("mf-list")) return;
+        const list = result.rows || [], total = +result.total || 0;
+        el.innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
         <thead><tr><th>時間</th>${one ? "" : "<th>商品／規格</th><th>貨號</th>"}<th>類型</th><th class="r">異動</th><th class="r">結存</th><th>單據</th><th>備註</th></tr></thead>
         <tbody>${list.map(m => {
           const ref = !m.ref ? `<span class="muted">—</span>`
@@ -2180,12 +2198,18 @@
             <td>${ref}</td>
             <td class="small" style="white-space:normal;min-width:160px">${esc(m.note) || `<span class="muted">—</span>`}${m.by ? `<div class="muted">${esc(m.by)}</div>` : ""}</td>
           </tr>`;
-        }).join("")}</tbody></table></div>` : `<div class="empty">沒有異動紀錄</div>`;
+        }).join("")}</tbody></table></div>
+        <div class="pager"><span class="small muted">第 ${total ? mf.page * SERVER_PAGE + 1 : 0}–${Math.min((mf.page + 1) * SERVER_PAGE, total)} 筆，共 ${total} 筆</span><div class="actions"><button class="btn btn-sm" id="mf-prev" ${mf.page === 0 ? "disabled" : ""}>上一頁</button><button class="btn btn-sm" id="mf-next" ${(mf.page + 1) * SERVER_PAGE >= total ? "disabled" : ""}>下一頁</button></div></div>` : `<div class="empty">沒有異動紀錄</div>`;
+        const prev = document.getElementById("mf-prev"), next = document.getElementById("mf-next");
+        if (prev) prev.addEventListener("click", () => { mf.page--; draw(); });
+        if (next) next.addEventListener("click", () => { mf.page++; draw(); });
+      } catch (err) { if (mine === request) el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
     };
     draw();
     const q = document.getElementById("mf-q");
-    if (q) q.addEventListener("input", e => { mf.q = e.target.value; draw(); });
-    document.getElementById("mf-type").addEventListener("change", e => { mf.type = e.target.value; draw(); });
+    let timer;
+    if (q) q.addEventListener("input", e => { mf.q = e.target.value; mf.page = 0; clearTimeout(timer); timer = setTimeout(draw, 250); });
+    document.getElementById("mf-type").addEventListener("change", e => { mf.type = e.target.value; mf.page = 0; draw(); });
     const aj = document.getElementById("mv-adjust");
     if (aj) aj.addEventListener("click", () => adjustPrompt(variantId, () => viewMoves(variantId)));
   }

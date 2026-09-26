@@ -363,6 +363,10 @@
         (!q || m.name.toLowerCase().includes(q) || m.sku.toLowerCase().includes(q) || m.ref.toLowerCase().includes(q))
       ).slice(-limit).reverse());
     },
+    async queryMovements({ q = "", type = "", variantId = "" } = {}, { offset = 0, limit = 100 } = {}) {
+      const all = inventory.movements({ q, type, variantId, limit: Number.MAX_SAFE_INTEGER });
+      return { total: all.length, rows: all.slice(offset, offset + limit) };
+    },
   };
 
   /* ---------- 進銷存：供應商 ---------- */
@@ -523,6 +527,7 @@
       const c = S().customers.find(x => x.id === id);
       return c ? Object.assign(publicCustomer(c), customers.summary(id)) : null;
     },
+    async fetch(id) { return customers.get(id); },
     summary(id) {
       const os = S().orders.filter(o => o.customerId === id && o.status !== "cancelled");
       return {
@@ -530,6 +535,16 @@
         totalSpent: os.reduce((s, o) => s + o.total, 0),
         lastOrderAt: os.map(o => o.createdAt).sort().pop() || "",
       };
+    },
+    async query({ q = "", tier = "" } = {}, { offset = 0, limit = 100 } = {}) {
+      const all = customers.list(q).map(c => Object.assign(c, { level: tiers.of(c.id) }))
+        .filter(c => !tier || (c.level && c.level.tier.id === tier));
+      return { total: all.length, rows: all.slice(offset, offset + limit) };
+    },
+    async tierCounts() {
+      const out = {};
+      S().customers.forEach(c => { const lv = tiers.of(c.id); if (lv) out[lv.tier.id] = (out[lv.tier.id] || 0) + 1; });
+      return out;
     },
     /* 沒登入的結帳：只用手機比對同一位顧客（Email 可能打錯或是別人的，不拿來比對）。
      * 已開通帳號的會員資料由本人維護，結帳時不覆蓋。 */
@@ -1271,7 +1286,7 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.21", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.22", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {

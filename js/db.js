@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.21）
+ * db.js — 資料層（Supabase 資料庫版，v0.22）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -114,7 +114,7 @@
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", returnPolicy: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
-      categories: [], products: [], customers: [], orders: [], coupons: [], promotions: [], store: {},
+      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], store: {},
       memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }
   // 規格的 options 依照商品規格順序重排（資料庫存的 JSON 不保留欄位順序）
@@ -149,6 +149,7 @@
     const d = normalize(await rpc("admin_bootstrap", { p_store: adminStore.id }));
     cache.admin = Object.assign(empty(), d, { loadedAt: Date.now() });
     extraOrders = {};
+    extraCustomers = {};
     notify();
   }
 
@@ -467,6 +468,7 @@
   };
 
   /* ---------- 會員（後台看的顧客清單） ---------- */
+  let extraCustomers = {};
   const customers = {
     list(q = "") {
       q = q.trim().toLowerCase();
@@ -475,12 +477,28 @@
         .map(c => Object.assign(clone(c), customers.summary(c.id)))
         .sort((a, b) => (b.lastOrderAt || b.createdAt).localeCompare(a.lastOrderAt || a.createdAt));
     },
-    get(id) { const c = C().customers.find(x => x.id === id); return c ? Object.assign(clone(c), customers.summary(id)) : null; },
+    get(id) {
+      const c = C().customers.find(x => x.id === id) || extraCustomers[id];
+      return c ? (c.orderCount == null ? Object.assign(clone(c), customers.summary(id)) : clone(c)) : null;
+    },
+    async fetch(id) {
+      const cached = customers.get(id);
+      if (cached) return cached;
+      const c = await rpc("admin_get_customer", { p_store: adminStore.id, p_customer: id });
+      if (c) extraCustomers[c.id] = c;
+      return c ? clone(c) : null;
+    },
     // 累積消費、訂單數由伺服器算「全部訂單」（後台只載入近期訂單）
     summary(id) {
       const x = (C().customerStats || {})[id];
       return x ? { orderCount: x.n, totalSpent: x.spent, lastOrderAt: x.last || "" } : { orderCount: 0, totalSpent: 0, lastOrderAt: "" };
     },
+    async query({ q = "", tier = "" } = {}, { offset = 0, limit = 100 } = {}) {
+      const result = await rpc("admin_search_customers", { p_store: adminStore.id, p_q: q, p_tier: tier, p_offset: offset, p_limit: limit });
+      (result.rows || []).forEach(c => { extraCustomers[c.id] = c; });
+      return result;
+    },
+    tierCounts: () => rpc("admin_customer_tier_counts", { p_store: adminStore.id }),
   };
 
   const notYet = async () => { throw new Error("這個功能在資料庫版還沒開放"); };
@@ -581,6 +599,8 @@
       if (side !== "admin") return cache.member && cache.member.level ? clone(cache.member.level) : null;
       const cfgT = tiers.get();
       if (!cfgT.enabled || !customerId) return null;
+      const known = customers.get(customerId);
+      if (known && known.level) return clone(known.level);
       const spent = tiers.spentOf(customerId);
       const list = cfgT.tiers.slice().sort((a, b) => a.minSpend - b.minSpend);
       let idx = 0;
@@ -639,6 +659,9 @@
         (!type || m.type === type) && (!variantId || m.variantId === variantId) &&
         (!q || m.name.toLowerCase().includes(q) || m.sku.toLowerCase().includes(q) || m.ref.toLowerCase().includes(q))
       ).slice(-limit).reverse());
+    },
+    async queryMovements({ q = "", type = "", variantId = "" } = {}, { offset = 0, limit = 100 } = {}) {
+      return rpc("admin_search_movements", { p_store: adminStore.id, p_q: q, p_type: type, p_variant: variantId || null, p_offset: offset, p_limit: limit });
     },
   };
   const suppliers = {
@@ -884,7 +907,7 @@
       avgOrder: monthOrders.length ? Math.round(sum(monthOrders) / monthOrders.length) : 0,
       toShip: C().orders.filter(o => o.status === "paid").length,
       toPay: C().orders.filter(o => o.status === "pending_payment").length,
-      customers: C().customers.length, daily,
+      customers: C().customerTotal != null ? C().customerTotal : C().customers.length, daily,
     };
   }
 
