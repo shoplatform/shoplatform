@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.25 · 資料庫已連線" : "v0.25 · 離線示範版"}</div>
+            <div>${remote ? "v0.26 · 資料庫已連線" : "v0.26 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>

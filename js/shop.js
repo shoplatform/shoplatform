@@ -110,6 +110,7 @@
           ${logoLink(st)}
           <input type="search" class="s-search" id="s-q" placeholder="搜尋商品" value="${esc(query)}" aria-label="搜尋商品">
           <nav class="s-nav" aria-label="會員">
+            <a href="#shop/favorites">收藏 ${DB.favorites.ids().length ? `<b>${DB.favorites.ids().length}</b>` : ""}</a>
             ${user ? `<a href="#shop/account">${esc(user.name)}</a>`
               : DB.auth.session && DB.auth.session() ? `<a href="#shop/join">完成會員資料</a>`
               : `<a href="#shop/track">訂單查詢</a>${DB.features.members ? `<a href="#shop/login">登入</a>` : ""}`}
@@ -279,13 +280,15 @@
         ${gridList.length ? `<div class="s-grid">${gridList.map(p => {
           const out = DB.products.totalStock(p) === 0;
           return `<a class="s-card" href="#shop/p/${p.id}">
-            <div style="position:relative">${out ? `<span class="s-soldout">售完</span>` : ""}${img(p)}</div>
+            <div style="position:relative">${out ? `<span class="s-soldout">售完</span>` : ""}<button class="s-fav ${DB.favorites.has(p.id) ? "is-on" : ""}" data-fav="${p.id}" type="button" aria-label="${DB.favorites.has(p.id) ? "取消收藏" : "加入收藏"}">♥</button>${img(p)}</div>
             <span class="s-name">${esc(p.name)}</span>
             <span class="s-price">${priceText(p)}</span>
             ${ratingLine(p)}
           </a>`;
         }).join("")}</div>` : `<div class="empty">找不到符合的商品</div>`}
+        ${front && DB.favorites.recent().length ? `<section class="s-recent"><h2>最近看過</h2><div class="s-grid">${DB.favorites.recent().slice(0, 4).map(p => `<a class="s-card" href="#shop/p/${p.id}">${img(p)}<span class="s-name">${esc(p.name)}</span><span class="s-price">${priceText(p)}</span></a>`).join("")}</div></section>` : ""}
       </div>`);
+    bindFavorites(() => viewHome(categoryId));
     root().querySelectorAll("[data-clear]").forEach(a => a.addEventListener("click", () => { query = ""; syncShopUrl(); }));
     const applyFilters = () => {
       filters.sort = document.getElementById("sf-sort").value;
@@ -310,6 +313,7 @@
     if (!p || !DB.products.isLive(p)) {
       return shell(`<div class="s-wrap"><div class="empty">這個商品不存在或已下架<div style="margin-top:12px"><a class="btn" href="#shop">回到商店</a></div></div></div>`);
     }
+    DB.favorites.seen(id);
     // 預設選第一個有庫存的規格
     const first = p.variants.find(v => v.stock > 0) || p.variants[0];
     const sel = Object.assign({}, first.options);
@@ -339,12 +343,14 @@
               <button class="btn" id="sp-buy">直接購買</button>
               <span class="s-stock" id="sp-stock"></span>
             </div>
+            <button class="btn ${DB.favorites.has(p.id) ? "btn-primary" : ""}" type="button" data-fav="${p.id}">${DB.favorites.has(p.id) ? "♥ 已收藏" : "♡ 加入收藏"}</button>
             ${ratingLine(p) ? `<a href="#sp-reviews" class="s-rating-link" id="sp-to-rv">${ratingLine(p)}</a>` : ""}
           </div>
         </div>
         <section class="s-box s-reviews" id="sp-reviews" ${reviewsOn() ? "" : "hidden"}></section>
       </div>`);
     drawReviews(p, document.getElementById("sp-reviews"));
+    bindFavorites(() => viewProduct(id));
     const toRv = document.getElementById("sp-to-rv");
     if (toRv) toRv.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); document.getElementById("sp-reviews").scrollIntoView({ behavior: "smooth" }); });
 
@@ -391,6 +397,22 @@
     };
     document.getElementById("sp-add").addEventListener("click", () => { if (add()) { toast("已加入購物車"); viewProduct(id); } });
     document.getElementById("sp-buy").addEventListener("click", () => { if (add()) Router.go("shop/cart"); });
+  }
+
+  function bindFavorites(after) {
+    root().querySelectorAll("[data-fav]").forEach(b => b.addEventListener("click", async e => {
+      e.preventDefault(); e.stopPropagation(); b.disabled = true;
+      try { const on = await DB.favorites.toggle(b.dataset.fav); toast(on ? "已加入收藏" : "已取消收藏"); after(); }
+      catch (err) { toast(err.message, "error"); b.disabled = false; }
+    }));
+  }
+
+  function viewFavorites() {
+    const ids = DB.favorites.ids();
+    const list = ids.map(id => DB.products.get(id)).filter(p => p && DB.products.isLive(p));
+    shell(`<div class="s-wrap s-page"><div class="s-page-head"><div><h1>我的收藏</h1><p class="muted">${DB.auth.current() ? "已同步到會員帳號" : "目前收藏存在這個瀏覽器，登入會員後可跨裝置保存新的收藏。"}</p></div></div>
+      ${list.length ? `<div class="s-grid">${list.map(p => `<a class="s-card" href="#shop/p/${p.id}"><div style="position:relative"><button class="s-fav is-on" data-fav="${p.id}" type="button" aria-label="取消收藏">♥</button>${img(p)}</div><span class="s-name">${esc(p.name)}</span><span class="s-price">${priceText(p)}</span></a>`).join("")}</div>` : `<div class="s-box"><div class="empty">還沒有收藏商品<div style="margin-top:12px"><a class="btn btn-primary" href="#shop">去逛逛</a></div></div></div>`}</div>`);
+    bindFavorites(viewFavorites);
   }
 
   /* ---------- 購物車 ---------- */
@@ -1041,6 +1063,7 @@
     switch (page) {
       case undefined: return viewHome();
       case "c": return viewHome(arg);
+      case "favorites": return viewFavorites();
       case "p": return viewProduct(arg);
       case "cart": return viewCart();
       case "checkout": return viewCheckout();

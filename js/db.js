@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.25）
+ * db.js — 資料層（Supabase 資料庫版，v0.26）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -109,7 +109,7 @@
   }
 
   /* ---------- 快取：前台（公開目錄）與後台（整家店）分開 ---------- */
-  const cache = { shop: null, admin: null, member: null, myOrders: [], platform: null, home: null };
+  const cache = { shop: null, admin: null, member: null, myOrders: [], favoriteIds: [], platform: null, home: null };
   let side = "shop";
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
@@ -141,9 +141,10 @@
   async function loadMember() {
     const { data } = await shopClient().auth.getSession();
     shopUser = data && data.session ? data.session.user : null;
-    if (!shopUser) { cache.member = null; cache.myOrders = []; return; }
+    if (!shopUser) { cache.member = null; cache.myOrders = []; cache.favoriteIds = readGuestFavorites(); return; }
     cache.member = await rpc("shop_member_me", { p_slug: shopSlug() });
     cache.myOrders = cache.member ? await rpc("shop_my_orders", { p_slug: shopSlug() }) : [];
+    cache.favoriteIds = cache.member ? await rpc("shop_favorites", { p_slug: shopSlug() }) : readGuestFavorites();
   }
   async function loadAdmin() {
     const d = normalize(await rpc("admin_bootstrap", { p_store: adminStore.id }));
@@ -557,7 +558,7 @@
     },
     async logout() {
       await shopClient().auth.signOut({ scope: "local" }).catch(() => {});
-      shopUser = null; cache.member = null; cache.myOrders = []; notify();
+      shopUser = null; cache.member = null; cache.myOrders = []; cache.favoriteIds = readGuestFavorites(); notify();
     },
     async updateProfile({ name, phone }) {
       cache.member = await rpc("shop_member_update", { p_slug: shopSlug(), p_name: name, p_phone: String(phone || "").replace(/[\s-]/g, "") });
@@ -919,6 +920,26 @@
     };
   }
 
+  /* ---------- 收藏與最近看過 ---------- */
+  const favKey = () => "shopPlatform.favorites." + shopSlug();
+  const recentKey = () => "shopPlatform.recent." + shopSlug();
+  function readIds(key) { try { const x = JSON.parse(localStorage.getItem(key) || "[]"); return Array.isArray(x) ? x : []; } catch (e) { return []; } }
+  function readGuestFavorites() { return readIds(favKey()); }
+  const favorites = {
+    ids: () => cache.favoriteIds.slice(),
+    has: id => cache.favoriteIds.includes(id),
+    async toggle(id) {
+      if (cache.member) {
+        const on = await rpc("shop_favorite_toggle", { p_slug: shopSlug(), p_product: id });
+        cache.favoriteIds = on ? [id, ...cache.favoriteIds.filter(x => x !== id)] : cache.favoriteIds.filter(x => x !== id); return on;
+      }
+      const on = !cache.favoriteIds.includes(id); cache.favoriteIds = on ? [id, ...cache.favoriteIds] : cache.favoriteIds.filter(x => x !== id);
+      localStorage.setItem(favKey(), JSON.stringify(cache.favoriteIds.slice(0, 100))); return on;
+    },
+    recent() { return readIds(recentKey()).map(id => (cache.shop || empty()).products.find(p => p.id === id)).filter(Boolean); },
+    seen(id) { const ids = [id, ...readIds(recentKey()).filter(x => x !== id)].slice(0, 12); localStorage.setItem(recentKey(), JSON.stringify(ids)); },
+  };
+
   /* ---------- 商品評價 ---------- */
   const reviews = {
     settings: () => Object.assign({ enabled: true, autoPublish: true }, (C().settings || {}).reviews || {}),
@@ -958,7 +979,7 @@
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases, reports, staff, reviews,
+    inventory, suppliers, purchases, reports, staff, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

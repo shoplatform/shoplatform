@@ -47,6 +47,10 @@
 
 .s-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; padding-bottom: 60px; }
 .s-card { text-decoration: none; color: var(--s-ink) !important; display: grid; gap: 8px; }
+.s-fav { position: absolute; z-index: 2; right: 9px; top: 9px; width: 36px; height: 36px; border: 1px solid var(--s-line); border-radius: 50%; background: var(--s-surface); color: var(--s-muted); font-size: 20px; cursor: pointer; box-shadow: 0 2px 8px #0001; }
+.s-fav:hover, .s-fav.is-on { color: #c94f64; border-color: #c94f64; }
+.s-recent { padding-top: 8px; }
+.s-recent h2 { margin-bottom: 16px; }
 .s-img { aspect-ratio: 1 / 1; max-width: 100%; border-radius: 4px; display: grid; place-items: center; color: rgba(255, 255, 255, .92); font-size: 44px; font-weight: 700; position: relative; overflow: hidden; }
 .s-img::after { content: ""; position: absolute; inset: 0; background: linear-gradient(160deg, rgba(255, 255, 255, .16), transparent 55%); }
 .s-img.has-photo { background: var(--s-soft) !important; }

@@ -1249,6 +1249,16 @@
     },
   };
 
+  /* ---------- 收藏與最近看過 ---------- */
+  const localIds = key => { try { const x = JSON.parse(localStorage.getItem(key) || "[]"); return Array.isArray(x) ? x : []; } catch (e) { return []; } };
+  const favorites = {
+    ids: () => localIds("shopPlatform.demo.favorites"),
+    has(id) { return favorites.ids().includes(id); },
+    async toggle(id) { const old = favorites.ids(), on = !old.includes(id), ids = on ? [id, ...old] : old.filter(x => x !== id); localStorage.setItem("shopPlatform.demo.favorites", JSON.stringify(ids.slice(0, 100))); return on; },
+    recent: () => localIds("shopPlatform.demo.recent").map(id => S().products.find(p => p.id === id)).filter(Boolean),
+    seen(id) { localStorage.setItem("shopPlatform.demo.recent", JSON.stringify([id, ...localIds("shopPlatform.demo.recent").filter(x => x !== id)].slice(0, 12))); },
+  };
+
   /* ---------- 商品評價（離線示範版：存在瀏覽器） ---------- */
   const maskName = n => { n = String(n || "").trim(); return !n ? "顧客" : n.length === 1 ? n + "*" : n[0] + "*".repeat(Math.min(n.length - 1, 2)); };
   const RV = () => (S().reviews = S().reviews || []);
@@ -1313,13 +1323,13 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.25", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.26", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
-    inventory, suppliers, purchases, reports, reviews,
+    inventory, suppliers, purchases, reports, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),
