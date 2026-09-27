@@ -1340,7 +1340,7 @@
     planInfo: () => ({tier:"pro",limits:{products:2000,staff:20,images:5000},usage:{products:S().products.length,staff:1,images:S().products.reduce((n,p)=>n+(p.images||[]).length,0)}}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.44", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.45", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     planStatus: async () => ({tier:"pro",entitlements:{staff:true,reports:true,bundles:true,customerTags:true,customPages:true,advancedInventory:true},billing:null,requests:[]}),
     requestService: async () => uid("req"), cancelServiceRequest: async () => {},
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };

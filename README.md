@@ -1,4 +1,9 @@
-# 開店平台 · v0.44
+# 開店平台 · v0.45
+
+## v0.45 新增：新商家開店 SOP
+
+- 建立商店後自動進入「開店引導」，依序完成基本資料、付款配送、第一件商品、退換貨政策與前台預覽。
+- 系統自動判斷完成進度；完成 5 步後提供可直接分享的商店網址。
 
 ## v0.44 新增：商品分享
 
@@ -261,7 +266,7 @@
 
 ## 從 v0.8／v0.9 升級（照順序做）
 
-1. **Supabase → SQL Editor → New query**：貼上新的 `supabase/schema.sql` 整份，按 Run，看到「完成：資料庫是 v0.44 版」。原本的資料都會保留。
+1. **Supabase → SQL Editor → New query**：貼上新的 `supabase/schema.sql` 整份，按 Run，看到「完成：資料庫是 v0.45 版」。原本的資料都會保留。
 2. **把自己設成平台管理者**（v0.9 已經做過就跳過）：在 SQL Editor 再執行一行（換成你註冊後台用的 Email）：
    ```sql
    select setup_platform_admin('你的email');

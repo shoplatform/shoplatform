@@ -34,12 +34,18 @@
     products: "products", product: "products", categories: "products", reviews: "products",
     stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory", counts: "inventory", count: "inventory", restocks:"inventory",
     coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
-    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner", plan: "owner", returns: "orders" };
+    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner", plan: "owner", setup:"owner", returns: "orders" };
   const can = p => DB.admin.can(p);
+  const onboardingState=()=>{const s=DB.settings.get(),ps=DB.products.list(),on=s.onboarding||{},steps=[
+    {id:'profile',title:'填寫商店基本資料',desc:'客服 Email、電話與商店介紹要完整，顧客才知道如何聯絡。',done:!!(s.name&&s.email&&s.phone),href:'admin/settings',action:'前往商店設定'},
+    {id:'delivery',title:'設定付款與配送方式',desc:'至少啟用一種付款方式與一種配送方式。',done:(s.paymentMethods||[]).some(x=>x.enabled)&&(s.shippingMethods||[]).some(x=>x.enabled),href:'admin/settings',action:'設定付款與配送'},
+    {id:'product',title:'上架第一件商品',desc:'建立商品、價格、規格及庫存，並將狀態設為上架。',done:ps.some(p=>DB.products.isLive(p)),href:'admin/product/new',action:'新增商品'},
+    {id:'policy',title:'填寫退換貨政策',desc:'讓顧客結帳前清楚知道退換貨方式。',done:!!String(s.returnPolicy||'').trim(),href:'admin/settings',action:'填寫退換貨政策'},
+    {id:'preview',title:'預覽並檢查商店前台',desc:'用顧客角度確認手機版、商品內容、運費與付款說明。',done:!!on.previewed,href:null,action:'開啟前台檢查'}];return {steps,done:steps.filter(x=>x.done).length,ready:steps.every(x=>x.done)};};
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
     const groups = [
-      ["", [["admin", "dash", "總覽", "", true],["admin/notifications","notifications","通知中心","",true]]],
+      ["", [["admin", "dash", "總覽", "", true],["admin/setup","setup","開店引導","",true],["admin/notifications","notifications","通知中心","",true]]],
       ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
       ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/restocks", "restocks", "補貨通知名單", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
@@ -75,7 +81,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.44 · 資料庫已連線" : "v0.44 · 離線示範版"}</div>
+            <div>${remote ? "v0.45 · 資料庫已連線" : "v0.45 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -576,7 +582,7 @@
     document.querySelectorAll("[data-use]").forEach(b => b.addEventListener("click", () => {
       DB.admin.useStore(b.dataset.use); toast("已切換商店"); Router.go("admin");
     }));
-    window.Billing.storeForm(document.getElementById("new-store"), DB.home.info(), () => Router.go("admin"));
+    window.Billing.storeForm(document.getElementById("new-store"), DB.home.info(), () => Router.go("admin/setup"));
     const lv = document.getElementById("st-leave");
     if (lv) lv.addEventListener("click", async () => {
       if (!(await confirmBox({ title: `離開「${cur.name}」？`, body: "離開後就不能再進這家店的後台，要回來需要店主重新邀請。", ok: "離開", danger: true }))) return;
@@ -646,6 +652,7 @@
     const recent = DB.orders.list().slice(0, 6);
     const pi=DB.admin.planInfo?DB.admin.planInfo():null, planNotice=pi&&Object.keys(pi.limits).some(k=>(pi.usage[k]||0)>=(pi.limits[k]||Infinity)*.8)?`<div class="notice"><b>方案用量提醒</b><div class="small">商品 ${pi.usage.products||0}/${pi.limits.products||"—"}・員工 ${pi.usage.staff||0}/${pi.limits.staff||"—"}・圖片 ${pi.usage.images||0}/${pi.limits.images||"—"}</div></div>`:"";
     const announcements=(DB.admin.announcements?DB.admin.announcements():[]).map(a=>`<div class="notice"><b>${esc(a.title)}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(a.content)}</div></div>`).join("");
+    const ob=onboardingState(),setupNotice=DB.admin.me().role==='owner'&&!ob.ready?`<div class="notice"><b>開店進度 ${ob.done}/5</b><div class="small">照著開店引導完成設定，就能安心把商店網址分享給顧客。</div><div style="margin-top:8px"><a class="btn btn-sm btn-primary" href="#admin/setup">繼續開店設定</a></div></div>`:'';
     const lowPanel = can("inventory") ? `<section class="panel">
           <div class="panel-head"><h2>補貨建議</h2><div class="actions"><a class="small" href="#admin/stock">全部庫存</a><a class="btn btn-sm" href="#admin/purchase/new">建立進貨單</a></div></div>
           ${restock.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>商品／規格</th><th class="r">庫存</th><th class="r">近 30 天</th><th>預估</th><th class="r">在途</th><th class="r">建議補貨</th></tr></thead><tbody>
@@ -673,6 +680,7 @@
     shell("dash", `
       <div class="page-head"><h1>總覽</h1><div class="actions">${DB.mode === "remote" ? notificationButton() : ""}<span class="muted">${date(new Date().toISOString())}</span></div></div>
       ${announcements}
+      ${setupNotice}
       ${planNotice}
       ${DB.mode === "remote" ? storeUrlBox() : ""}
       <div class="kpis">
@@ -2571,7 +2579,7 @@
         <p class="muted">已用 <b>${esc(st.email)}</b> 登入。填好商店名稱和網址代號，馬上就能開始試用。</p>
         <div id="gate-new"></div>
         <div class="actions"><button class="btn btn-ghost" id="gate-out" type="button">登出，換一個帳號</button></div>`, true);
-      window.Billing.storeForm(document.getElementById("gate-new"), st.home || DB.home.info(), () => Router.go("admin"));
+      window.Billing.storeForm(document.getElementById("gate-new"), st.home || DB.home.info(), () => Router.go("admin/setup"));
       outBtn(); return;
     }
     if (st.state === "pick") {
@@ -2662,6 +2670,11 @@
   async function viewRestocks(){shell('restocks',`<div class="page-head"><h1>補貨通知名單</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.restocks.adminList('');document.getElementById('main').innerHTML=`<div class="page-head"><h1>補貨通知名單</h1><div class="actions"><button class="btn" id="rr-export">匯出 CSV</button><button class="btn btn-primary" id="rr-done">標記已通知</button></div></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th><input type="checkbox" id="rr-all"></th><th>商品／規格</th><th>Email</th><th>手機</th><th>登記時間</th><th>狀態</th></tr></thead><tbody>${rows.map(r=>`<tr><td><input type="checkbox" class="rr-pick" value="${r.id}" ${r.status!=='waiting'?'disabled':''}></td><td>${esc(r.productName)}<div class="small muted">${esc(r.optionText||'')}</div></td><td>${esc(r.email)}</td><td>${esc(r.phone||'—')}</td><td>${date(r.createdAt,true)}</td><td><span class="pill ${r.status==='waiting'?'warn':'ok'}">${r.status==='waiting'?'等待通知':'已通知'}</span></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">目前沒有補貨登記</div>'}</section><p class="small muted">目前先匯出名單後由商家自行寄信或聯絡；未來串接寄信服務後可自動發送。</p>`;const picked=()=>[...document.querySelectorAll('.rr-pick:checked')].map(x=>x.value);const all=document.getElementById('rr-all');if(all)all.onchange=()=>document.querySelectorAll('.rr-pick:not(:disabled)').forEach(x=>x.checked=all.checked);document.getElementById('rr-done').onclick=async()=>{const ids=picked();if(!ids.length)return toast('請先勾選名單','error');await DB.restocks.markNotified(ids);toast('已標記為已通知');viewRestocks();};document.getElementById('rr-export').onclick=()=>{const csv=['商品,規格,Email,手機,狀態,登記時間',...rows.map(r=>[r.productName,r.optionText,r.email,r.phone,r.status,r.createdAt].map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(','))].join('\n');download(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}),`補貨通知名單_${new Date().toISOString().slice(0,10)}.csv`);};}catch(e){toast(e.message,'error');}}
   async function viewNotifications(){shell('notifications',`<div class="page-head"><h1>通知中心</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const x=await DB.notifications.list(),rows=x.items||[];document.getElementById('main').innerHTML=`<div class="page-head"><h1>通知中心</h1><button class="btn" id="nt-read">全部標為已讀</button></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><tbody>${rows.map(n=>`<tr class="is-link" data-href="${esc(n.link)}"><td><span class="pill info">${{order:'訂單',return:'售後',restock:'補貨'}[n.kind]||'通知'}</span></td><td><b>${esc(n.title)}</b><div class="small muted">${esc(n.text||'')}</div></td><td>${date(n.at,true)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">目前沒有新通知</div>'}</section>`;document.getElementById('nt-read').onclick=async()=>{await DB.notifications.read();toast('已全部標為已讀');viewNotifications();};}catch(e){toast(e.message,'error');}}
 
+  function viewSetup(){const x=onboardingState(),url=DB.mode==='remote'?DB.admin.storeUrl(DB.admin.store().slug):location.href.split('#')[0];shell('setup',`<div class="page-head"><div><h1>開店引導</h1><p class="muted">照順序完成 5 個步驟，不需要懂技術。</p></div><span class="pill ${x.ready?'ok':'info'}">${x.ready?'已完成':'進度 '+x.done+'/5'}</span></div>
+    <section class="panel"><div class="panel-body"><div style="height:10px;background:var(--line);border-radius:99px;overflow:hidden"><i style="display:block;height:100%;width:${x.done/5*100}%;background:var(--accent)"></i></div></div></section>
+    <div style="display:grid;gap:12px">${x.steps.map((s,i)=>`<section class="panel"><div class="panel-body" style="display:flex;gap:14px;align-items:flex-start"><span class="pill ${s.done?'ok':'idle'}">${s.done?'完成':i+1}</span><div style="flex:1"><h2 style="margin:0 0 6px">${esc(s.title)}</h2><p class="muted" style="margin:0">${esc(s.desc)}</p></div>${s.id==='preview'?`<button class="btn ${s.done?'':'btn-primary'}" id="setup-preview">${s.done?'再次預覽':'開啟前台檢查'}</button>`:`<a class="btn ${s.done?'':'btn-primary'}" href="#${s.href}">${s.done?'檢查內容':s.action}</a>`}</div></section>`).join('')}</div>
+    ${x.ready?`<section class="panel is-hl"><div class="panel-body"><h2>你的商店已準備好了</h2><p>把下面網址傳給顧客，就可以開始接單。付款與出貨目前由商家人工確認。</p><div class="url-box"><a class="mono" href="${esc(url)}#shop" target="_blank" rel="noopener">${esc(url)}#shop</a><button class="btn btn-primary" data-copy="${esc(url)}#shop">複製商店網址</button></div></div></section>`:`<div class="notice">完成後系統會在這裡顯示可以分享的商店網址。尚未完成也不會遺失資料，可以隨時回來繼續。</div>`}`);const p=document.getElementById('setup-preview');if(p)p.onclick=async()=>{window.open(url+'#shop','_blank','noopener');const s=DB.settings.get();await DB.settings.update({onboarding:Object.assign({},s.onboarding||{},{previewed:true,previewedAt:new Date().toISOString()})});toast('已記錄前台檢查');viewSetup();};}
+
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
     if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
@@ -2670,6 +2683,7 @@
     startOrderWatch();
     switch (page) {
       case undefined: return viewDashboard();
+      case "setup": return viewSetup();
       case "products": return arg === "sort" ? viewProductSort() : viewProducts();
       case "product": return viewProductEdit(arg);
       case "categories": return viewCategories();
