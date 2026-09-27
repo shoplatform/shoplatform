@@ -8,7 +8,20 @@
 (function () {
   const { esc, money, date, toast, Router } = window.UI;
   const root = () => document.getElementById("app");
-  let query = "";
+  const initialParams = new URLSearchParams(location.search);
+  let query = initialParams.get("q") || "";
+  const filters = {
+    sort: ["price-asc", "price-desc"].includes(initialParams.get("sort")) ? initialParams.get("sort") : "",
+    stock: initialParams.get("stock") === "1",
+    min: initialParams.get("min") || "",
+    max: initialParams.get("max") || "",
+  };
+  function syncShopUrl() {
+    const qs = new URLSearchParams(location.search);
+    const set = (k, v) => v === "" || v === false ? qs.delete(k) : qs.set(k, v === true ? "1" : v);
+    set("q", query.trim()); set("sort", filters.sort); set("stock", filters.stock); set("min", filters.min); set("max", filters.max);
+    history.replaceState(null, "", location.pathname + (qs.toString() ? "?" + qs : "") + location.hash);
+  }
 
   function priceText(p) {
     const [lo, hi] = DB.products.priceRange(p);
@@ -113,7 +126,7 @@
       </div>`;
     const q = document.getElementById("s-q");
     q.addEventListener("keydown", e => {
-      if (e.key === "Enter") { query = q.value; Router.go("shop"); }
+      if (e.key === "Enter") { query = q.value.trim(); syncShopUrl(); Router.go("shop"); }
     });
   }
 
@@ -219,10 +232,19 @@
   function viewHome(categoryId) {
     const st = DB.settings.get();
     const cats = DB.categories.list().filter(c => DB.products.list({ categoryId: c.id, live: true }).length);
-    const list = DB.products.list({ q: query, categoryId: categoryId || "", live: true });
+    let list = DB.products.list({ q: query, categoryId: categoryId || "", live: true });
+    const min = filters.min === "" ? null : Math.max(0, +filters.min || 0);
+    const max = filters.max === "" ? null : Math.max(0, +filters.max || 0);
+    list = list.filter(p => {
+      return (!filters.stock || DB.products.totalStock(p) > 0) &&
+        p.variants.some(v => (min == null || v.price >= min) && (max == null || v.price <= max));
+    });
+    if (filters.sort === "price-asc") list.sort((a, b) => DB.products.priceRange(a)[0] - DB.products.priceRange(b)[0]);
+    if (filters.sort === "price-desc") list.sort((a, b) => DB.products.priceRange(b)[0] - DB.products.priceRange(a)[0]);
     const cur = cats.find(c => c.id === categoryId);
     const th = window.Theme ? window.Theme.normalize(st.theme) : { layout: "grid" };
-    const front = !cur && !query;   // 首頁（不是分類頁、搜尋結果）才套用版型
+    const filtered = !!(query || filters.sort || filters.stock || filters.min !== "" || filters.max !== "");
+    const front = !cur && !filtered;   // 首頁（不是分類頁、搜尋結果）才套用版型
     const banner = front && th.layout === "banner";
     const feature = front && th.layout === "magazine" && list.length > 1 ? list[0] : null;
     const gridList = feature ? list.slice(1) : list;
@@ -234,13 +256,20 @@
       </div></section>` : ""}
       <div class="s-wrap" id="s-all">
         ${banner ? "" : `<section class="s-hero">
-          <h1>${cur ? esc(cur.name) : query ? `搜尋「${esc(query)}」` : esc(front && th.heroTitle ? th.heroTitle : st.name)}</h1>
-          <p>${cur || query ? `共 ${list.length} 件商品` : esc(front && th.heroText ? th.heroText : st.tagline)}</p>
+          <h1>${cur ? esc(cur.name) : query ? `搜尋「${esc(query)}」` : filtered ? "篩選結果" : esc(front && th.heroTitle ? th.heroTitle : st.name)}</h1>
+          <p>${cur || filtered ? `共 ${list.length} 件商品` : esc(front && th.heroText ? th.heroText : st.tagline)}</p>
         </section>`}
         <nav class="s-cats" aria-label="商品分類">
           <a href="#shop" class="${!categoryId && !query ? "is-on" : ""}" data-clear="1">全部</a>
           ${cats.map(c => `<a href="#shop/c/${c.id}" class="${categoryId === c.id ? "is-on" : ""}">${esc(c.name)}</a>`).join("")}
         </nav>
+        <section class="s-filters" aria-label="商品篩選">
+          <label>排序<select id="sf-sort"><option value="">推薦排序</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>價格：低到高</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>價格：高到低</option></select></label>
+          <label>最低價格<input type="number" id="sf-min" min="0" step="1" inputmode="numeric" value="${esc(filters.min)}" placeholder="不限"></label>
+          <label>最高價格<input type="number" id="sf-max" min="0" step="1" inputmode="numeric" value="${esc(filters.max)}" placeholder="不限"></label>
+          <label class="s-stock-check"><input type="checkbox" id="sf-stock" ${filters.stock ? "checked" : ""}> 只看有貨</label>
+          ${filtered ? `<button class="btn btn-sm btn-ghost" type="button" id="sf-clear">清除條件</button>` : ""}
+        </section>
         ${feature ? `<a class="s-feature" href="#shop/p/${feature.id}">
           ${img(feature)}
           <div><span class="s-kicker">本週主打</span><h2>${esc(feature.name)}</h2>
@@ -257,7 +286,20 @@
           </a>`;
         }).join("")}</div>` : `<div class="empty">找不到符合的商品</div>`}
       </div>`);
-    root().querySelectorAll("[data-clear]").forEach(a => a.addEventListener("click", () => { query = ""; }));
+    root().querySelectorAll("[data-clear]").forEach(a => a.addEventListener("click", () => { query = ""; syncShopUrl(); }));
+    const applyFilters = () => {
+      filters.sort = document.getElementById("sf-sort").value;
+      filters.stock = document.getElementById("sf-stock").checked;
+      filters.min = document.getElementById("sf-min").value;
+      filters.max = document.getElementById("sf-max").value;
+      if (filters.min !== "" && filters.max !== "" && +filters.min > +filters.max) return toast("最低價格不能高於最高價格", "error");
+      syncShopUrl(); viewHome(categoryId);
+    };
+    document.getElementById("sf-sort").addEventListener("change", applyFilters);
+    document.getElementById("sf-stock").addEventListener("change", applyFilters);
+    ["sf-min", "sf-max"].forEach(id => document.getElementById(id).addEventListener("change", applyFilters));
+    const clear = document.getElementById("sf-clear");
+    if (clear) clear.addEventListener("click", () => { query = ""; Object.assign(filters, { sort: "", stock: false, min: "", max: "" }); syncShopUrl(); viewHome(categoryId); });
     const toAll = document.getElementById("s-to-all");
     if (toAll) toAll.addEventListener("click", () => document.getElementById("s-all").scrollIntoView({ behavior: "smooth" }));
   }
