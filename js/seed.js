@@ -211,6 +211,10 @@ window.makeSeed = function () {
     { id: "pm_autumn", name: "秋季滿額折", tiers: [{ min: 1500, off: 150 }, { min: 3000, off: 400 }],
       startAt: ymd(-10), endAt: ymd(20), enabled: true, createdAt: iso(10) },
   ];
+  const bundleOffers = [
+    { id: "bo_demo", name: "托特包加購蠟燭", type: "addon", triggerProduct: "p_tote", targetProduct: "p_candle", value: 650,
+      startAt: "", endAt: "", enabled: true, createdAt: iso(1) },
+  ];
 
   return {
     version: 6,
@@ -247,7 +251,7 @@ window.makeSeed = function () {
           { id: "c_wear", name: "服飾配件" },
           { id: "c_scent", name: "香氛" },
         ],
-        products, customers, customerTags, orders, coupons, promotions, suppliers, purchases, movements,
+        products, customers, customerTags, orders, coupons, promotions, bundleOffers, suppliers, purchases, movements,
         memberTiers: {
           enabled: true, period: "all",
           tiers: [

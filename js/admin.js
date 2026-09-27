@@ -26,14 +26,14 @@
     ["customers", "會員", "查看會員資料與消費紀錄"],
     ["products", "商品", "新增、編輯商品與分類"],
     ["inventory", "進銷存", "庫存、進貨單、供應商（會看到成本）"],
-    ["marketing", "行銷", "優惠券、滿額活動、會員等級"],
+    ["marketing", "行銷", "優惠券、滿額活動、組合加購、會員等級"],
     ["reports", "報表", "營收與毛利報表（會看到成本）"],
     ["settings", "設定", "商店設定與外觀"],
   ];
   const PAGE_PERM = { orders: "orders", order: "orders", customers: "customers", customer: "customers", reports: "reports",
     products: "products", product: "products", categories: "products", reviews: "products",
     stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory",
-    coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", tiers: "marketing",
+    coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
     theme: "settings", settings: "settings", staff: "owner" };
   const can = p => DB.admin.can(p);
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
@@ -43,7 +43,7 @@
       ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
       ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
-      ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
+      ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/bundles", "bundles", "組合與加購", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
       ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")]]],
     ];
     return groups.map(([title, items]) => {
@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.26 · 資料庫已連線" : "v0.26 · 離線示範版"}</div>
+            <div>${remote ? "v0.27 · 資料庫已連線" : "v0.27 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -2518,6 +2518,21 @@
     });
   }
 
+  function viewBundles() {
+    const list=DB.bundles.list();
+    shell("bundles", `<div class="page-head"><h1>組合與加購</h1><a class="btn btn-primary" href="#admin/bundle/new">新增活動</a></div><section class="panel">${list.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>名稱</th><th>優惠內容</th><th>期間</th><th>狀態</th></tr></thead><tbody>${list.map(x=>`<tr class="is-link" data-href="admin/bundle/${x.id}"><td>${esc(x.name)}</td><td>${esc(DB.bundles.describe(x))}</td><td class="small">${esc(periodText(x))}</td><td>${periodPill(x.state)}</td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">還沒有組合或加購活動</div>`}</section><p class="small muted">同一筆購物車符合多個活動時，自動套用折扣最多的一個；滿額、會員與優惠碼仍照原規則計算。</p>`);
+  }
+  function viewBundleEdit(id) {
+    const isNew=id==="new", ps=DB.products.list(), x=isNew?{name:"",type:"bundle",triggerProduct:ps[0]?.id||"",targetProduct:ps[1]?.id||"",value:100,startAt:"",endAt:"",enabled:true}:DB.bundles.get(id);
+    if(!x)return notFound("找不到這個活動","admin/bundles");
+    const opts=sel=>ps.map(p=>`<option value="${p.id}" ${p.id===sel?"selected":""}>${esc(p.name)}</option>`).join("");
+    shell("bundles", `<div class="page-head"><div class="crumbs"><a href="#admin/bundles">組合與加購</a><span>/</span><span>${isNew?"新增活動":esc(x.name)}</span></div><div class="actions">${isNew?"":`<button class="btn" id="bo-del">刪除</button>`}<button class="btn btn-primary" id="bo-save">儲存</button></div></div><div class="grid-2"><section class="panel"><div class="panel-head"><h2>活動內容</h2></div><div class="panel-body"><div class="field"><label for="bo-name">活動名稱</label><input id="bo-name" maxlength="40" value="${esc(x.name)}"></div><div class="field"><label for="bo-type">種類</label><select id="bo-type"><option value="bundle" ${x.type==="bundle"?"selected":""}>組合優惠</option><option value="addon" ${x.type==="addon"?"selected":""}>加價購</option></select></div><div class="field"><label for="bo-a">先買商品</label><select id="bo-a">${opts(x.triggerProduct)}</select></div><div class="field"><label for="bo-b">搭配商品</label><select id="bo-b">${opts(x.targetProduct)}</select></div><div class="field"><label id="bo-value-label" for="bo-value"></label><input type="number" min="0" step="1" id="bo-value" value="${x.value}"><span class="hint" id="bo-hint"></span></div><p class="small" id="bo-preview"></p></div></section><section class="panel"><div class="panel-head"><h2>期間與狀態</h2></div><div class="panel-body">${periodFields(x,"bo")}<label class="check"><input type="checkbox" id="bo-on" ${x.enabled?"checked":""}> 啟用</label></div></section></div>`);
+    const val=()=>({id:x.id,name:document.getElementById("bo-name").value,type:document.getElementById("bo-type").value,triggerProduct:document.getElementById("bo-a").value,targetProduct:document.getElementById("bo-b").value,value:+document.getElementById("bo-value").value,startAt:document.getElementById("bo-start").value,endAt:document.getElementById("bo-end").value,enabled:document.getElementById("bo-on").checked});
+    const draw=()=>{const v=val();document.getElementById("bo-value-label").textContent=v.type==="addon"?"加購價（NT$）":"每組折抵（NT$）";document.getElementById("bo-hint").textContent=v.type==="addon"?"搭配商品會以這個價格計算":"兩項商品每湊成一組折多少";document.getElementById("bo-preview").innerHTML=`顧客會看到：<b>${esc(DB.bundles.describe(v))}</b>`;}; draw(); root().querySelector(".main").addEventListener("input",draw);root().querySelector(".main").addEventListener("change",draw);
+    document.getElementById("bo-save").addEventListener("click",async()=>{try{const s=await DB.bundles.save(val());toast("已儲存活動");Router.go("admin/bundle/"+s.id);}catch(e){toast(e.message,"error");}});
+    const del=document.getElementById("bo-del");if(del)del.addEventListener("click",async()=>{if(await confirmBox({title:`刪除「${x.name}」？`,body:"既有訂單不受影響。",ok:"刪除",danger:true})){await DB.bundles.remove(x.id);toast("已刪除");Router.go("admin/bundles");}});
+  }
+
   function notFound(msg, back) {
     shell("", `<div class="panel"><div class="empty">${esc(msg)}<div style="margin-top:12px"><a class="btn" href="#${back}">返回</a></div></div></div>`);
   }
@@ -2632,6 +2647,8 @@
       case "coupon": return viewCouponEdit(arg);
       case "promotions": return viewPromotions();
       case "promotion": return viewPromotionEdit(arg);
+      case "bundles": return viewBundles();
+      case "bundle": return viewBundleEdit(arg);
       case "tiers": return viewTiers();
       case "stock": return viewStock();
       case "moves": return viewMoves(arg);

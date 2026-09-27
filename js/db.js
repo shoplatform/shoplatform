@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.26）
+ * db.js — 資料層（Supabase 資料庫版，v0.27）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -114,7 +114,7 @@
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", returnPolicy: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
-      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], store: {},
+      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], bundleOffers: [], store: {},
       memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }
   // 規格的 options 依照商品規格順序重排（資料庫存的 JSON 不保留欄位順序）
@@ -895,6 +895,14 @@
     async save(input) { const id = await rpc("admin_save_promotion", { p_store: adminStore.id, p_promo: input }); await afterWrite(); return promotions.get(id); },
     async remove(id) { await rpc("admin_delete_promotion", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
   };
+  const bundles = {
+    list: () => clone(C().bundleOffers || []),
+    active: () => clone((cache.shop && cache.shop.bundleOffers) || []),
+    get: id => { const x = (C().bundleOffers || []).find(o => o.id === id); return x ? clone(x) : null; },
+    describe(o) { const a = products.get(o.triggerProduct), b = products.get(o.targetProduct); return o.type === "addon" ? `買 ${a ? a.name : "指定商品"}，${b ? b.name : "加購商品"} 加購價 ${money0(o.value)}` : `${a ? a.name : "商品 A"}＋${b ? b.name : "商品 B"}，現折 ${money0(o.value)}`; },
+    async save(input) { const id = await rpc("admin_save_bundle_offer", { p_store: adminStore.id, p_offer: input }); await afterWrite(); return bundles.get(id); },
+    async remove(id) { await rpc("admin_delete_bundle_offer", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
+  };
 
   /* ---------- 報表（從後台快取算） ---------- */
   function stats() {
@@ -978,7 +986,7 @@
   window.DB = {
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, tiers,
     inventory, suppliers, purchases, reports, staff, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset: notYet,

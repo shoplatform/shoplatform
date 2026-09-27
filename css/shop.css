@@ -51,6 +51,10 @@
 .s-fav:hover, .s-fav.is-on { color: #c94f64; border-color: #c94f64; }
 .s-recent { padding-top: 8px; }
 .s-recent h2 { margin-bottom: 16px; }
+.s-offers { display:grid; gap:8px; margin-top:14px; padding:14px; border:1px solid var(--s-line); border-radius:10px; background:var(--s-soft); }
+.s-offers a { display:grid; gap:2px; color:var(--s-ink); text-decoration:none; }
+.s-offers a:hover span { text-decoration:underline; }
+.s-offers small { color:var(--s-muted); }
 .s-img { aspect-ratio: 1 / 1; max-width: 100%; border-radius: 4px; display: grid; place-items: center; color: rgba(255, 255, 255, .92); font-size: 44px; font-weight: 700; position: relative; overflow: hidden; }
 .s-img::after { content: ""; position: absolute; inset: 0; background: linear-gradient(160deg, rgba(255, 255, 255, .16), transparent 55%); }
 .s-img.has-photo { background: var(--s-soft) !important; }

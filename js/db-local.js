@@ -33,6 +33,7 @@
     Object.values(s.stores).forEach(store => {
       store.products.forEach(p => { if (!Array.isArray(p.images)) p.images = []; });
       if (store.settings.returnPolicy === undefined) store.settings.returnPolicy = "";
+      if (!store.bundleOffers) store.bundleOffers = [];
     });
     if (!s.sessions) s.sessions = {};
     if ((s.version || 1) < 3 && s.stores.demo) {
@@ -45,6 +46,7 @@
       Object.values(s.stores).forEach(store => {
         if (!store.coupons) store.coupons = store.id === "demo" ? demo.coupons : [];
         if (!store.promotions) store.promotions = store.id === "demo" ? demo.promotions : [];
+        if (!store.bundleOffers) store.bundleOffers = store.id === "demo" ? demo.bundleOffers : [];
       });
       if (s.cartCoupon === undefined) s.cartCoupon = "";
     }
@@ -821,6 +823,14 @@
     },
     remove(id) { S().promotions = S().promotions.filter(p => p.id !== id); commit(); },
   };
+  const bundles = {
+    list: () => clone(S().bundleOffers || []).map(x => Object.assign(x, { state: periodState(x) })),
+    active: () => clone((S().bundleOffers || []).filter(x => periodState(x) === "active")),
+    get: id => { const x = (S().bundleOffers || []).find(o => o.id === id); return x ? Object.assign(clone(x), { state: periodState(x) }) : null; },
+    describe(o) { const a = products.get(o.triggerProduct), b = products.get(o.targetProduct); return o.type === "addon" ? `買 ${a ? a.name : "指定商品"}，${b ? b.name : "加購商品"} 加購價 ${money0(o.value)}` : `${a ? a.name : "商品 A"}＋${b ? b.name : "商品 B"}，現折 ${money0(o.value)}`; },
+    save(input) { const d=clone(input); d.name=String(d.name||"").trim(); if(!d.name) throw new Error("請填寫活動名稱"); if(!["bundle","addon"].includes(d.type)) throw new Error("請選擇活動種類"); if(!d.triggerProduct||!d.targetProduct||d.triggerProduct===d.targetProduct) throw new Error("請選擇兩個不同商品"); d.value=Math.max(0,Math.floor(+d.value||0)); if(d.type==="bundle"&&!d.value) throw new Error("組合折抵金額要大於 0"); if(d.startAt&&d.endAt&&d.startAt>d.endAt) throw new Error("結束日期不能早於開始日期"); d.enabled=!!d.enabled; S().bundleOffers=S().bundleOffers||[]; if(!d.id){d.id=uid("bo");d.createdAt=new Date().toISOString();S().bundleOffers.push(d);}else{const i=S().bundleOffers.findIndex(x=>x.id===d.id);if(i<0)throw new Error("找不到這個活動");S().bundleOffers[i]=Object.assign({},S().bundleOffers[i],d);} commit(); return clone(d); },
+    remove(id) { S().bundleOffers=(S().bundleOffers||[]).filter(x=>x.id!==id); commit(); },
+  };
 
   /* ---------- 會員等級 ----------
    * 等級看「有效消費」：已付款以上（待出貨、已出貨、已完成）且沒取消的訂單總額。
@@ -911,7 +921,9 @@
     }));
     if (nextTier && promo && nextTier.off <= promo.amount) nextTier = null;
     const promoAmt = promo ? promo.amount : 0;
-    const afterPromo = subtotal - promoAmt;
+    let bundle = null, bundleAmt = 0;
+    bundles.active().forEach(o => { const aq=items.filter(x=>x.productId===o.triggerProduct).reduce((s,x)=>s+x.qty,0), bs=items.filter(x=>x.productId===o.targetProduct), bq=bs.reduce((s,x)=>s+x.qty,0), bp=bs.length?Math.min(...bs.map(x=>x.price)):0; if(aq&&bq){const amt=Math.min(aq,bq)*(o.type==="addon"?Math.max(0,bp-o.value):o.value);if(amt>bundleAmt){bundleAmt=amt;bundle={id:o.id,name:o.name,type:o.type,amount:amt};}} });
+    const afterPromo = subtotal - promoAmt - bundleAmt;
 
     // 會員等級折扣：只有登入的會員才有
     const me_ = me();
@@ -926,7 +938,7 @@
       catch (e) { couponError = e.message; }
     }
     const couponAmt = coupon ? coupon.amount : 0;
-    const discount = promoAmt + memberAmt + couponAmt;
+    const discount = promoAmt + bundleAmt + memberAmt + couponAmt;
     const goods = subtotal - discount;
 
     const method = st.shippingMethods.find(m => m.id === shippingMethodId);
@@ -936,10 +948,11 @@
     const shippingFee = !method || free ? 0 : method.fee;
     const discounts = [];
     if (promo) discounts.push({ kind: "promo", label: `${promo.name}（滿 ${money0(promo.min)} 折 ${money0(promo.amount)}）`, amount: promoAmt });
+    if (bundle) discounts.push({ kind: "bundle", label: bundle.name, amount: bundleAmt });
     if (memberAmt || freeByLevel) discounts.push({ kind: "member", label: `會員等級 ${level.tier.name}（${tiers.benefit(level.tier)}）`, amount: memberAmt, freeShip: freeByLevel });
     if (coupon) discounts.push({ kind: "coupon", code: coupon.code, label: `優惠碼 ${coupon.code}・${coupon.name}`, amount: couponAmt, freeShip: coupon.freeShip });
     return {
-      subtotal, promo, level, nextTier: nextTier && { ...nextTier, gap: nextTier.min - subtotal },
+      subtotal, promo, bundle, level, nextTier: nextTier && { ...nextTier, gap: nextTier.min - subtotal },
       coupon, couponError, discounts, discount, goods, shippingFee, total: goods + shippingFee,
       freeShipByCoupon: !!(coupon && coupon.freeShip),
       freeGap: free ? 0 : Math.max(0, st.freeShippingThreshold - goods),
@@ -1323,12 +1336,12 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.26", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.27", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, tiers,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, tiers,
     inventory, suppliers, purchases, reports, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },

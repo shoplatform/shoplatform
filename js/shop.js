@@ -319,6 +319,7 @@
     const sel = Object.assign({}, first.options);
     let qty = 1;
     const images = p.images || [];
+    const offers = DB.bundles.active().filter(o => o.triggerProduct === p.id || o.targetProduct === p.id);
 
     shell(`
       <div class="s-wrap">
@@ -344,6 +345,7 @@
               <span class="s-stock" id="sp-stock"></span>
             </div>
             <button class="btn ${DB.favorites.has(p.id) ? "btn-primary" : ""}" type="button" data-fav="${p.id}">${DB.favorites.has(p.id) ? "♥ 已收藏" : "♡ 加入收藏"}</button>
+            ${offers.length ? `<div class="s-offers"><b>搭配優惠</b>${offers.map(o => { const other=DB.products.get(o.triggerProduct===p.id?o.targetProduct:o.triggerProduct); return `<a href="#shop/p/${other.id}"><span>${esc(o.name)}</span><small>${esc(DB.bundles.describe(o))}</small></a>`; }).join("")}</div>` : ""}
             ${ratingLine(p) ? `<a href="#sp-reviews" class="s-rating-link" id="sp-to-rv">${ratingLine(p)}</a>` : ""}
           </div>
         </div>
