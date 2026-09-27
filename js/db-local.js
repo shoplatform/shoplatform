@@ -367,6 +367,15 @@
       const all = inventory.movements({ q, type, variantId, limit: Number.MAX_SAFE_INTEGER });
       return { total: all.length, rows: all.slice(offset, offset + limit) };
     },
+    async restockSuggestions() {
+      const since = Date.now() - 30 * 86400000, limit = S().settings.lowStockAlert;
+      return inventory.list().filter(r => r.status === "active").map(r => {
+        const sold30 = Math.max(0, S().movements.filter(m => m.variantId === r.variantId && new Date(m.at).getTime() >= since && ["sale", "cancel", "return"].includes(m.type)).reduce((n, m) => n - m.delta, 0));
+        const daysLeft = sold30 > 0 ? Math.round(r.stock * 30 / sold30 * 10) / 10 : null;
+        return Object.assign(r, { sold30, daysLeft, suggested: Math.max(0, sold30 - r.stock - r.incoming), urgency: r.stock === 0 || (daysLeft != null && daysLeft <= 7) ? "urgent" : daysLeft != null && daysLeft <= 14 ? "soon" : "low" });
+      }).filter(r => r.stock <= limit || (r.daysLeft != null && r.daysLeft <= 14))
+        .sort((a, b) => (a.stock === 0 ? 0 : a.daysLeft == null ? 2 : 1) - (b.stock === 0 ? 0 : b.daysLeft == null ? 2 : 1) || (a.daysLeft == null ? Infinity : a.daysLeft) - (b.daysLeft == null ? Infinity : b.daysLeft) || a.stock - b.stock);
+    },
   };
 
   /* ---------- 進銷存：供應商 ---------- */
@@ -1304,7 +1313,7 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.24", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.25", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {

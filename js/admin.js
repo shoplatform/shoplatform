@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.24 · 資料庫已連線" : "v0.24 · 離線示範版"}</div>
+            <div>${remote ? "v0.25 · 資料庫已連線" : "v0.25 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -638,18 +638,25 @@
     tick();
   }
 
-  function viewDashboard() {
+  async function viewDashboard() {
     const s = DB.stats();
     const low = DB.products.lowStock();
+    let restock = [];
+    if (can("inventory")) { try { restock = await DB.inventory.restockSuggestions(); } catch (e) { restock = []; } }
     const recent = DB.orders.list().slice(0, 6);
-    const lowPanel = `<section class="panel">
-          <div class="panel-head"><h2>庫存偏低</h2>${can("products") ? `<a class="small" href="#admin/products">管理商品</a>` : ""}</div>
-          ${low.length ? `<div class="table-wrap"><table class="tbl"><tbody>
-            ${low.slice(0, 6).map(x => `<tr ${can("products") ? `class="is-link" data-href="admin/product/${x.product.id}"` : ""}>
-              <td><div class="prod-cell">${thumb(x.product)}<div><span>${esc(x.product.name)}</span><span class="small muted">${esc(Object.values(x.variant.options).join(" / ") || "單一規格")}</span></div></div></td>
-              <td class="r">${x.variant.stock === 0 ? `<span class="pill bad">售完</span>` : `<span class="pill warn">剩 ${x.variant.stock}</span>`}</td>
+    const lowPanel = can("inventory") ? `<section class="panel">
+          <div class="panel-head"><h2>補貨建議</h2><div class="actions"><a class="small" href="#admin/stock">全部庫存</a><a class="btn btn-sm" href="#admin/purchase/new">建立進貨單</a></div></div>
+          ${restock.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>商品／規格</th><th class="r">庫存</th><th class="r">近 30 天</th><th>預估</th><th class="r">在途</th><th class="r">建議補貨</th></tr></thead><tbody>
+            ${restock.slice(0, 8).map(x => `<tr class="is-link" data-href="admin/moves/${x.variantId}">
+              <td>${esc(x.name)}<div class="small muted">${esc(x.optionText || "單一規格")} · <span class="mono">${esc(x.sku)}</span></div></td>
+              <td class="r num">${x.stock === 0 ? `<span class="pill bad">售完</span>` : x.stock}</td><td class="r num">${x.sold30} 件</td>
+              <td>${x.daysLeft == null ? `<span class="muted">暫時無法估算</span>` : x.daysLeft <= 7 ? `<span class="pill bad">約 ${Math.max(0, Math.ceil(x.daysLeft))} 天售完</span>` : x.daysLeft <= 14 ? `<span class="pill warn">約 ${Math.ceil(x.daysLeft)} 天售完</span>` : `<span class="small">約 ${Math.ceil(x.daysLeft)} 天售完</span>`}</td>
+              <td class="r num">${x.incoming || 0}</td><td class="r num"><b>${x.suggested > 0 ? x.suggested : "—"}</b></td>
             </tr>`).join("")}
-          </tbody></table></div>` : `<div class="empty">庫存都充足</div>`}
+          </tbody></table></div><div class="panel-body" style="padding-top:0"><p class="small muted" style="margin:0">依近 30 天淨銷量估算；建議補貨以再維持約 30 天為目標，並扣除已下單但尚未入庫的數量。點商品可查看異動或調整庫存。</p></div>` : `<div class="empty">目前沒有需要注意的庫存</div>`}
+        </section>` : `<section class="panel">
+          <div class="panel-head"><h2>庫存偏低</h2>${can("products") ? `<a class="small" href="#admin/products">管理商品</a>` : ""}</div>
+          ${low.length ? `<div class="table-wrap"><table class="tbl"><tbody>${low.slice(0, 6).map(x => `<tr><td>${esc(x.product.name)}<div class="small muted">${esc(Object.values(x.variant.options).join(" / ") || "單一規格")}</div></td><td class="r">${x.variant.stock === 0 ? `<span class="pill bad">售完</span>` : `<span class="pill warn">剩 ${x.variant.stock}</span>`}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">庫存都充足</div>`}
         </section>`;
     // 沒有訂單權限的員工：只看商店網址和庫存提醒
     if (!can("orders")) {

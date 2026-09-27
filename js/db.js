@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.24）
+ * db.js — 資料層（Supabase 資料庫版，v0.25）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -670,6 +670,7 @@
     async queryMovements({ q = "", type = "", variantId = "" } = {}, { offset = 0, limit = 100 } = {}) {
       return rpc("admin_search_movements", { p_store: adminStore.id, p_q: q, p_type: type, p_variant: variantId || null, p_offset: offset, p_limit: limit });
     },
+    restockSuggestions: () => rpc("admin_restock_suggestions", { p_store: adminStore.id }),
   };
   const suppliers = {
     list() {
