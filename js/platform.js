@@ -193,6 +193,7 @@
             ${link("platform", "dash", "總覽")}
             ${link("platform/stores", "stores", "商店", soon || "")}
             ${link("platform/billing", "billing", "收款與異動")}
+            ${link("platform/requests", "requests", "方案申請")}
             ${link("platform/announcements", "announcements", "商家公告")}
             ${link("platform/analytics", "analytics", "營運分析")}
             ${link("platform/settings", "settings", "平台設定")}
@@ -200,7 +201,7 @@
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.33 · 平台管理者</div>
+            <div>v0.40 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -485,6 +486,8 @@
     });
   }
 
+  async function viewRequests(){shell('requests',`<div class="page-head"><h1>方案申請</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.platform.requests();document.getElementById('main').innerHTML=`<div class="page-head"><h1>方案申請</h1><span class="muted">${rows.filter(x=>x.status==='pending').length} 筆待處理</span></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>商店</th><th>申請內容</th><th>申請人</th><th>時間</th><th>狀態</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td><b>${esc(r.storeName)}</b><div class="small muted">${esc(r.storeSlug)}</div></td><td>${r.kind==='renew'?`續約 ${r.years} 年`:r.kind==='upgrade'?'升級進階版':'改為基本版'}${r.note?`<div class="small muted">${esc(r.note)}</div>`:''}</td><td>${esc(r.requestedBy)}</td><td>${date(r.createdAt,true)}</td><td><span class="pill ${r.status==='pending'?'warn':r.status==='approved'?'ok':'idle'}">${{pending:'待處理',approved:'已核准',rejected:'未核准',cancelled:'已取消'}[r.status]}</span></td><td>${r.status==='pending'?`<button class="btn btn-sm btn-primary" data-ok="${r.id}">核准</button> <button class="btn btn-sm" data-no="${r.id}">不核准</button>`:esc(r.platformNote||'')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有方案申請</div>'}</section>`;const go=async(id,status)=>{const note=prompt('處理說明（商家看得到，可留空）','')||'';try{await DB.platform.resolveRequest(id,status,note);toast('已完成處理');viewRequests();}catch(e){toast(e.message,'error');}};document.querySelectorAll('[data-ok]').forEach(b=>b.onclick=()=>go(b.dataset.ok,'approved'));document.querySelectorAll('[data-no]').forEach(b=>b.onclick=()=>go(b.dataset.no,'rejected'));}catch(e){toast(e.message,'error');}}
+
   window.PlatformApp = function (parts) {
     const [, page, arg] = parts;
     switch (page) {
@@ -492,6 +495,7 @@
       case "stores": return viewStores(arg);
       case "store": return viewStore(arg);
       case "billing": return viewBilling(arg);
+      case "requests": return viewRequests();
       case "announcements": return viewAnnouncements(arg);
       case "analytics": return viewAnalytics();
       case "settings": return viewSettings();

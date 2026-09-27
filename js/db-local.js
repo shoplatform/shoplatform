@@ -1340,13 +1340,27 @@
     planInfo: () => ({tier:"pro",limits:{products:2000,staff:20,images:5000},usage:{products:S().products.length,staff:1,images:S().products.reduce((n,p)=>n+(p.images||[]).length,0)}}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.33", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.40", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    planStatus: async () => ({tier:"pro",entitlements:{staff:true,reports:true,bundles:true,customerTags:true,customPages:true,advancedInventory:true},billing:null,requests:[]}),
+    requestService: async () => uid("req"), cancelServiceRequest: async () => {},
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
+  const returns = {
+    mine: async()=>clone(S().returnCases||[]),
+    async create(orderNumber,kind,items,reason,note){S().returnCases=S().returnCases||[];const r={id:uid('ret'),orderNumber,kind,items,reason,customerNote:note||'',status:'requested',merchantNote:'',createdAt:new Date().toISOString()};S().returnCases.unshift(r);commit();return r.id;},
+    adminList:async()=>clone(S().returnCases||[]),
+    async update(id,status,note){const r=(S().returnCases||[]).find(x=>x.id===id);if(r){r.status=status;r.merchantNote=note||'';commit();}}
+  };
+  const stockCounts = {
+    list:async()=>clone(S().stockCounts||[]),
+    async create(note){S().stockCounts=S().stockCounts||[];const items=inventory.list().map(x=>({variantId:x.variantId,productId:x.productId,name:x.name,optionText:x.optionText,sku:x.sku,systemQty:x.stock,actualQty:x.stock})),id=uid('sc');S().stockCounts.unshift({id,number:'SC-DEMO-'+String(S().stockCounts.length+1).padStart(4,'0'),status:'draft',note:note||'',items,createdAt:new Date().toISOString()});commit();return id;},
+    async save(id,items,note){const x=(S().stockCounts||[]).find(y=>y.id===id);if(x&&x.status==='draft'){x.items=clone(items);x.note=note||'';commit();}},
+    async complete(id){const x=(S().stockCounts||[]).find(y=>y.id===id);if(!x)return;for(const it of x.items){const hit=findVariant(it.variantId);if(hit){const d=it.actualQty-hit.v.stock;hit.v.stock=it.actualQty;if(d)logMove(hit.p,hit.v,d,'adjust',x.number,'盤點校正');}}x.status='completed';x.completedAt=new Date().toISOString();commit();}
+  };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, reviews, favorites,
+    inventory, suppliers, purchases, reports, reviews, favorites, returns, stockCounts,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

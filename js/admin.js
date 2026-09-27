@@ -32,19 +32,19 @@
   ];
   const PAGE_PERM = { orders: "orders", order: "orders", customers: "customers", customer: "customers", reports: "reports",
     products: "products", product: "products", categories: "products", reviews: "products",
-    stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory",
+    stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory", counts: "inventory", count: "inventory",
     coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
-    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner" };
+    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner", plan: "owner", returns: "orders" };
   const can = p => DB.admin.can(p);
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
     const groups = [
       ["", [["admin", "dash", "總覽", "", true]]],
-      ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
+      ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
-      ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
+      ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
       ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/bundles", "bundles", "組合與加購", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
-      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")]]],
+      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")], ["admin/plan", "plan", "方案與續約", "", can("owner")]]],
     ];
     return groups.map(([title, items]) => {
       const shown = items.filter(x => x[4]);
@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.33 · 資料庫已連線" : "v0.33 · 離線示範版"}</div>
+            <div>${remote ? "v0.40 · 資料庫已連線" : "v0.40 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -1917,7 +1917,7 @@
   function viewCouponEdit(id) {
     const isNew = id === "new";
     const c = isNew
-      ? { code: "", name: "", type: "amount", value: 100, maxDiscount: 0, minSpend: 0, startAt: "", endAt: "", usageLimit: 0, perCustomer: 1, membersOnly: false, stackable: true, enabled: true, used: 0 }
+      ? { code: "", name: "", type: "amount", value: 100, maxDiscount: 0, minSpend: 0, startAt: "", endAt: "", usageLimit: 0, perCustomer: 1, membersOnly: false, stackable: true, enabled: true, used: 0, scope:"all", productIds:[], categoryIds:[] }
       : DB.coupons.get(id);
     if (!c) return notFound("找不到這張優惠券", "admin/coupons");
     shell("coupons", `
@@ -1962,6 +1962,9 @@
             <div class="panel-body">
               <div class="field"><label for="cp-limit">總共可用幾次</label><input type="number" id="cp-limit" min="0" step="1" value="${c.usageLimit}"><span class="hint">0 代表不限；目前已用 ${c.used || 0} 次</span></div>
               <div class="field"><label for="cp-per">每位顧客可用幾次</label><input type="number" id="cp-per" min="0" step="1" value="${c.perCustomer}"><span class="hint">用會員帳號或下單手機計算，0 代表不限</span></div>
+              <div class="field"><label for="cp-scope">適用範圍</label><select id="cp-scope"><option value="all" ${c.scope==='all'||!c.scope?'selected':''}>全部商品</option><option value="products" ${c.scope==='products'?'selected':''}>指定商品</option><option value="categories" ${c.scope==='categories'?'selected':''}>指定分類</option></select></div>
+              <div class="field" id="cp-products"><label>指定商品（可複選）</label><select id="cp-product-ids" multiple size="6">${DB.products.list().map(p=>`<option value="${p.id}" ${(c.productIds||[]).includes(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+              <div class="field" id="cp-categories"><label>指定分類（可複選）</label><select id="cp-category-ids" multiple size="6">${DB.categories.list().map(x=>`<option value="${x.id}" ${(c.categoryIds||[]).includes(x.id)?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>
               <label class="check"><input type="checkbox" id="cp-members" ${c.membersOnly ? "checked" : ""}> 限登入會員使用</label>
               <label class="check"><input type="checkbox" id="cp-stack" ${c.stackable ? "checked" : ""}> 可以和滿額活動一起用</label>
             </div>
@@ -1977,6 +1980,9 @@
       startAt: document.getElementById("cp-start").value, endAt: document.getElementById("cp-end").value,
       usageLimit: +document.getElementById("cp-limit").value, perCustomer: +document.getElementById("cp-per").value,
       membersOnly: document.getElementById("cp-members").checked, stackable: document.getElementById("cp-stack").checked,
+      scope: document.getElementById("cp-scope").value,
+      productIds: [...document.getElementById("cp-product-ids").selectedOptions].map(x=>x.value),
+      categoryIds: [...document.getElementById("cp-category-ids").selectedOptions].map(x=>x.value),
       enabled: document.getElementById("cp-on").checked,
     });
     function drawType() {
@@ -1986,6 +1992,8 @@
       document.getElementById("cp-value-l").textContent = t === "percent" ? "打幾折" : "折抵金額（NT$）";
       document.getElementById("cp-value-h").textContent = t === "percent" ? "85 代表 85 折；9 折請填 90" : "";
       const v = val();
+      document.getElementById("cp-products").hidden=v.scope!=="products";
+      document.getElementById("cp-categories").hidden=v.scope!=="categories";
       document.getElementById("cp-preview").innerHTML = `顧客會看到：<b>${esc(DB.coupons.describe(v))}</b>`;
     }
     drawType();
@@ -2636,6 +2644,21 @@
       <div class="panel"><div class="empty">這個功能會在第二階段搬到資料庫後開放。<div style="margin-top:12px"><a class="btn" href="#admin">回總覽</a></div></div></div>`);
   }
 
+  const REQ_KIND={upgrade:"升級方案",downgrade:"降級方案",renew:"續約"},REQ_STATUS={pending:"待處理",approved:"已核准",rejected:"未核准",cancelled:"已取消"};
+  async function viewPlan(){
+    shell("plan",`<div class="page-head"><h1>方案與續約</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);
+    try{const x=await DB.admin.planStatus(),pro=x.tier==="pro",b=x.billing||{};document.getElementById("main").innerHTML=`<div class="page-head"><h1>方案與續約</h1><span class="pill ${pro?'ok':'info'}">${pro?'進階版':'基本版'}</span></div>
+      <div class="grid-2"><section class="panel"><div class="panel-head"><h2>目前方案</h2></div><div class="panel-body"><h3>${pro?'進階版':'基本版'}</h3><p class="muted">${pro?'含員工、完整報表、會員標籤、組合活動、自訂頁面及庫存盤點。':'包含商品、訂單、會員與基本進銷存；需要進階工具時可提出升級。'}</p><p>使用期限：<b>${esc((b.activeUntil||'').slice(0,10)||'依平台設定')}</b></p><div class="actions">${pro?'<button class="btn" data-req="downgrade">申請改為基本版</button>':'<button class="btn btn-primary" data-req="upgrade">申請升級進階版</button>'}<button class="btn" data-req="renew">申請續約</button></div></div></section>
+      <section class="panel"><div class="panel-head"><h2>功能比較</h2></div><div class="table-wrap"><table class="tbl"><thead><tr><th>功能</th><th>基本版</th><th>進階版</th></tr></thead><tbody>${[["商品／訂單／會員","有","有"],["基本進貨與庫存","有","有"],["員工帳號","—","有"],["營運報表／會員標籤","—","有"],["組合活動／自訂頁面","—","有"],["庫存盤點單","—","有"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}</tbody></table></div></section></div>
+      <section class="panel"><div class="panel-head"><h2>申請紀錄</h2></div>${x.requests.length?`<div class="table-wrap"><table class="tbl"><tbody>${x.requests.map(r=>`<tr><td>${REQ_KIND[r.kind]}</td><td>${r.kind==='renew'?r.years+' 年':r.targetTier==='pro'?'進階版':'基本版'}</td><td><span class="pill ${r.status==='approved'?'ok':r.status==='pending'?'warn':'idle'}">${REQ_STATUS[r.status]}</span></td><td class="small">${date(r.createdAt,true)}</td><td>${r.platformNote?esc(r.platformNote):''}</td><td>${r.status==='pending'?`<button class="btn btn-sm" data-cancel="${r.id}">取消</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有申請紀錄</div>'}</section>`;
+      document.querySelectorAll('[data-req]').forEach(bu=>bu.onclick=async()=>{const kind=bu.dataset.req,target=kind==='upgrade'?'pro':kind==='downgrade'?'basic':null;let years=kind==='renew'?prompt('要續約幾年？','1'):0;if(kind==='renew'&&!years)return;const note=prompt('備註（可留空）','')||'';try{await DB.admin.requestService(kind,target,years,note);toast('申請已送出');viewPlan();}catch(e){toast(e.message,'error');}});document.querySelectorAll('[data-cancel]').forEach(bu=>bu.onclick=async()=>{await DB.admin.cancelServiceRequest(bu.dataset.cancel);viewPlan();});
+    }catch(e){document.getElementById('main').innerHTML=`<div class="notice">${esc(e.message)}</div>`;}
+  }
+
+  async function viewReturns(){shell('returns',`<div class="page-head"><h1>售後處理</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.returns.adminList('');document.getElementById('main').innerHTML=`<div class="page-head"><h1>售後處理</h1></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>訂單</th><th>顧客</th><th>申請</th><th>原因</th><th>狀態</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td><a href="#admin/order/${r.orderId}">${esc(r.orderNumber)}</a></td><td>${esc(r.customerName)}</td><td>${{return:'退貨',exchange:'換貨',refund:'退款'}[r.kind]}</td><td>${esc(r.reason)}</td><td><select data-status="${r.id}">${[['requested','已申請'],['reviewing','處理中'],['waiting_return','等待寄回'],['received','已收到商品'],['approved','已核准'],['rejected','未核准'],['completed','已完成'],['cancelled','已取消']].map(x=>`<option value="${x[0]}" ${r.status===x[0]?'selected':''}>${x[1]}</option>`).join('')}</select></td><td><button class="btn btn-sm" data-ret="${r.id}">儲存</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">目前沒有售後案件</div>'}</section>`;document.querySelectorAll('[data-ret]').forEach(b=>b.onclick=async()=>{const id=b.dataset.ret,st=document.querySelector(`[data-status="${id}"]`).value,note=prompt('給顧客看的處理說明（可留空）','')||'';try{await DB.returns.update(id,st,note,0,false);toast('已更新售後進度');viewReturns();}catch(e){toast(e.message,'error');}});}catch(e){toast(e.message,'error');}}
+
+  async function viewCounts(id){shell('counts',`<div class="page-head"><h1>庫存盤點</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.stockCounts.list(),x=id&&rows.find(y=>y.id===id);if(x){document.getElementById('main').innerHTML=`<div class="page-head"><div class="crumbs"><a href="#admin/counts">庫存盤點</a><span>/</span><span>${esc(x.number)}</span></div><div class="actions"><button class="btn" id="sc-save">儲存</button>${x.status==='draft'?'<button class="btn btn-primary" id="sc-done">完成盤點</button>':''}</div></div><section class="panel"><div class="table-wrap"><table class="tbl"><thead><tr><th>商品</th><th>SKU</th><th class="r">系統數量</th><th class="r">實際數量</th><th class="r">差異</th></tr></thead><tbody>${x.items.map((it,i)=>`<tr><td>${esc(it.name)}<span class="small muted">${esc(it.optionText||'')}</span></td><td>${esc(it.sku||'')}</td><td class="r">${it.systemQty}</td><td class="r"><input class="sc-q" data-i="${i}" type="number" min="0" value="${it.actualQty}" ${x.status!=='draft'?'disabled':''} style="width:90px"></td><td class="r">${it.actualQty-it.systemQty}</td></tr>`).join('')}</tbody></table></div></section>`;const vals=()=>x.items.map((it,i)=>Object.assign({},it,{actualQty:+document.querySelector(`[data-i="${i}"]`).value||0}));document.getElementById('sc-save').onclick=async()=>{await DB.stockCounts.save(x.id,vals(),x.note);toast('盤點內容已儲存');viewCounts(x.id);};const done=document.getElementById('sc-done');if(done)done.onclick=async()=>{await DB.stockCounts.save(x.id,vals(),x.note);if(await confirmBox({title:'完成盤點？',body:'系統會依實際數量校正庫存，並留下每筆異動紀錄。',ok:'完成盤點'})){await DB.stockCounts.complete(x.id);toast('已完成盤點並校正庫存');viewCounts(x.id);}};return;}document.getElementById('main').innerHTML=`<div class="page-head"><h1>庫存盤點</h1><button class="btn btn-primary" id="sc-new">建立盤點單</button></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><tbody>${rows.map(r=>`<tr class="is-link" data-href="admin/count/${r.id}"><td>${esc(r.number)}</td><td>${r.items.length} 個規格</td><td><span class="pill ${r.status==='completed'?'ok':'warn'}">${r.status==='completed'?'已完成':'草稿'}</span></td><td>${date(r.createdAt,true)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有盤點單</div>'}</section>`;document.getElementById('sc-new').onclick=async()=>{try{const rid=await DB.stockCounts.create(prompt('盤點備註（可留空）','')||'');Router.go('admin/count/'+rid);}catch(e){toast(e.message,'error');}};}catch(e){document.getElementById('main').innerHTML=`<div class="notice">${esc(e.message)}</div>`;}}
+
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
     if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
@@ -2649,6 +2672,7 @@
       case "categories": return viewCategories();
       case "orders": return viewOrders(arg);
       case "order": return viewOrder(arg);
+      case "returns": return viewReturns();
       case "customers": return viewCustomers();
       case "customer": return viewCustomer(arg);
       case "settings": return viewSettings();
@@ -2662,6 +2686,8 @@
       case "page": return viewPageEdit(arg);
       case "tiers": return viewTiers();
       case "stock": return viewStock();
+      case "counts": return viewCounts();
+      case "count": return viewCounts(arg);
       case "moves": return viewMoves(arg);
       case "purchases": return viewPurchases(arg);
       case "purchase": return viewPurchase(arg);
@@ -2671,6 +2697,7 @@
       case "theme": return viewTheme();
       case "reviews": return viewReviews(arg);
       case "staff": return DB.features.staff ? viewStaff() : notFound("離線示範版只有店主一個人", "admin");
+      case "plan": return viewPlan();
       case "stores": return DB.mode === "remote" ? viewStores() : notFound("離線示範版只有一家商店", "admin");
       default: return notFound("找不到這個頁面", "admin");
     }

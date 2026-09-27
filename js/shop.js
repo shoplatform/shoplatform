@@ -1036,6 +1036,7 @@
               </dl>
               ${o.status === "pending_payment" ? `<button class="btn" type="button" id="mo-cancel">取消訂單</button>` : ""}
             </section>
+            ${user && ["paid","shipped","completed"].includes(o.status)?`<section class="s-box" id="mo-return"><h2>售後服務</h2><p class="small" style="color:var(--s-muted)">需要退貨、換貨或退款，可以直接送出申請並查看處理進度。</p><button class="btn" type="button" id="mo-return-new">提出售後申請</button></section>`:""}
             <section class="s-box" id="mo-reviews" hidden></section>
           </div>
         </div>
@@ -1051,6 +1052,10 @@
             : `<button class="btn btn-sm btn-primary" type="button" data-rv="${i}">寫評價</button>`}</div>`).join("")}`;
         box.querySelectorAll("[data-rv]").forEach(b => b.addEventListener("click", () => reviewForm(mineHere[+b.dataset.rv], () => viewMyOrder(o.number))));
       }).catch(() => {});
+    }
+    if(user&&["paid","shipped","completed"].includes(o.status)){
+      const rb=document.getElementById('mo-return-new');if(rb)rb.onclick=async()=>{const kind=prompt('請輸入：退貨、換貨 或 退款','退貨'),map={退貨:'return',換貨:'exchange',退款:'refund'};if(!map[kind])return toast('請輸入退貨、換貨或退款','error');const reason=prompt('請說明原因','');if(!reason)return;try{await DB.returns.create(o.number,map[kind],o.items.map(x=>({variantId:x.variantId,qty:x.qty,name:x.name})),reason,'');toast('售後申請已送出');viewMyOrder(o.number);}catch(e){toast(e.message,'error');}};
+      DB.returns.mine().then(rows=>{const box=document.getElementById('mo-return'),r=rows.find(x=>x.orderNumber===o.number);if(!box||!r)return;box.innerHTML=`<h2>售後服務</h2><p><span class="pill info">${{requested:'已申請',reviewing:'處理中',waiting_return:'等待寄回',received:'店家已收件',approved:'已核准',rejected:'未核准',completed:'已完成',cancelled:'已取消'}[r.status]||r.status}</span></p><p>${esc(r.reason)}</p>${r.merchantNote?`<div class="s-gap">店家回覆：${esc(r.merchantNote)}</div>`:''}`;}).catch(()=>{});
     }
     const c = document.getElementById("mo-cancel");
     if (c) c.addEventListener("click", async () => {

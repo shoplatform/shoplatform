@@ -1,5 +1,5 @@
-/* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.33）
+/* v0.40 ====================================================
+ * db.js — 資料層（Supabase 資料庫版，v0.40）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -227,6 +227,9 @@
     },
     exportData: () => rpc("admin_export_data", { p_store: adminStore.id }),
     newOrders: since => rpc("admin_new_orders", { p_store: adminStore.id, p_since: since || null }),
+    planStatus: () => rpc("admin_plan_status", { p_store: adminStore.id }),
+    async requestService(kind, targetTier, years, note) { return rpc("admin_create_service_request", { p_store: adminStore.id, p_kind: kind, p_target_tier: targetTier || null, p_years: +(years || 0), p_note: note || "" }); },
+    cancelServiceRequest: id => rpc("admin_cancel_service_request", { p_store: adminStore.id, p_id: id }),
   };
 
   /* 平台首頁的公開資訊（年費、試用天數…） */
@@ -287,6 +290,8 @@
     async setPlan(store, plan, note) { await rpc("platform_set_plan", { p_store: store, p_plan: plan, p_note: note || "" }); await afterPlatform(); },
     async setSuspended(store, on, reason) { await rpc("platform_set_suspended", { p_store: store, p_suspended: !!on, p_reason: reason || "" }); await afterPlatform(); },
     async setServiceTier(store,tier){await rpc("platform_set_service_tier",{p_store:store,p_tier:tier});await afterPlatform();},
+    requests: () => rpc("platform_service_requests"),
+    async resolveRequest(id,status,note){await rpc("platform_resolve_service_request",{p_id:id,p_status:status,p_note:note||""});await afterPlatform();},
     async saveNote(store, note) { await rpc("platform_save_note", { p_store: store, p_note: note || "" }); await afterPlatform(); },
     async saveSettings(v) { await rpc("platform_save_settings", { p_settings: v }); cache.home = null; await afterPlatform(); },
     async saveAnnouncement(v) { const id=await rpc("platform_save_announcement",{p_item:v});await afterPlatform();return id; },
@@ -878,6 +883,20 @@
     async setNote(id, note) { await rpc("admin_set_order_note", { p_store: adminStore.id, p_order: id, p_note: note }); await afterWrite(); },
   };
 
+  const returns = {
+    mine: () => rpc("shop_my_returns", { p_slug: SLUG }),
+    create: (orderNumber, kind, items, reason, note) => rpc("shop_create_return", { p_slug: SLUG, p_order: orderNumber, p_kind: kind, p_items: items || [], p_reason: reason || "", p_note: note || "" }),
+    adminList: status => rpc("admin_return_cases", { p_store: adminStore.id, p_status: status || "" }),
+    async update(id,status,note,refundAmount,restock){await rpc("admin_update_return_case",{p_store:adminStore.id,p_id:id,p_status:status,p_note:note||"",p_refund:+refundAmount||0,p_restock:!!restock});}
+  };
+
+  const stockCounts = {
+    list: () => rpc("admin_stock_counts", { p_store: adminStore.id }),
+    create: note => rpc("admin_create_stock_count", { p_store: adminStore.id, p_note: note || "" }),
+    save: (id,items,note) => rpc("admin_save_stock_count", { p_store: adminStore.id, p_id:id, p_items:items, p_note:note||"" }),
+    complete: id => rpc("admin_complete_stock_count", { p_store: adminStore.id, p_id:id })
+  };
+
   /* ---------- 行銷：優惠券、滿額活動 ---------- */
   const coupons = {
     TYPES: { amount: "折抵金額", percent: "打折", freeship: "免運" },
@@ -996,7 +1015,7 @@
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, staff, reviews, favorites,
+    inventory, suppliers, purchases, reports, staff, reviews, favorites, returns, stockCounts,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };
