@@ -1,5 +1,5 @@
-/* v0.40 ====================================================
- * db.js — 資料層（Supabase 資料庫版，v0.40）
+/* v0.44 ====================================================
+ * db.js — 資料層（Supabase 資料庫版，v0.44）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -896,6 +896,15 @@
     save: (id,items,note) => rpc("admin_save_stock_count", { p_store: adminStore.id, p_id:id, p_items:items, p_note:note||"" }),
     complete: id => rpc("admin_complete_stock_count", { p_store: adminStore.id, p_id:id })
   };
+  const restocks = {
+    request: (productId,variantId,email,phone) => rpc("shop_request_restock",{p_slug:shopSlug(),p_product:productId,p_variant:variantId||null,p_email:email||"",p_phone:phone||""}),
+    adminList: status => rpc("admin_restock_requests",{p_store:adminStore.id,p_status:status||""}),
+    markNotified: ids => rpc("admin_mark_restock_notified",{p_store:adminStore.id,p_ids:ids||[]})
+  };
+  const notifications = {
+    list: () => rpc("admin_notification_center",{p_store:adminStore.id}),
+    read: () => rpc("admin_mark_notifications_read",{p_store:adminStore.id})
+  };
 
   /* ---------- 行銷：優惠券、滿額活動 ---------- */
   const coupons = {
@@ -1015,7 +1024,7 @@
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, staff, reviews, favorites, returns, stockCounts,
+    inventory, suppliers, purchases, reports, staff, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

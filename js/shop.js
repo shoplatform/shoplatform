@@ -347,6 +347,8 @@
               <span class="s-stock" id="sp-stock"></span>
             </div>
             <button class="btn ${DB.favorites.has(p.id) ? "btn-primary" : ""}" type="button" data-fav="${p.id}">${DB.favorites.has(p.id) ? "♥ 已收藏" : "♡ 加入收藏"}</button>
+            <button class="btn" type="button" id="sp-share">分享商品</button>
+            <button class="btn" type="button" id="sp-restock" hidden>到貨通知我</button>
             ${offers.length ? `<div class="s-offers"><b>搭配優惠</b>${offers.map(o => { const other=DB.products.get(o.triggerProduct===p.id?o.targetProduct:o.triggerProduct); return `<a href="#shop/p/${other.id}"><span>${esc(o.name)}</span><small>${esc(DB.bundles.describe(o))}</small></a>`; }).join("")}</div>` : ""}
             ${ratingLine(p) ? `<a href="#sp-reviews" class="s-rating-link" id="sp-to-rv">${ratingLine(p)}</a>` : ""}
           </div>
@@ -380,6 +382,7 @@
       stockEl.textContent = !v ? "請選擇規格" : v.stock === 0 ? "這個規格已售完" : v.stock <= 5 ? `僅剩 ${v.stock} 件` : "有現貨";
       document.getElementById("sp-add").disabled = !can;
       document.getElementById("sp-buy").disabled = !can;
+      document.getElementById("sp-restock").hidden = !v || v.stock > 0;
       if (v && qty > v.stock && v.stock > 0) { qty = v.stock; document.getElementById("sp-qty").value = qty; }
     }
     draw();
@@ -401,6 +404,8 @@
     };
     document.getElementById("sp-add").addEventListener("click", () => { if (add()) { toast("已加入購物車"); viewProduct(id); } });
     document.getElementById("sp-buy").addEventListener("click", () => { if (add()) Router.go("shop/cart"); });
+    document.getElementById("sp-share").addEventListener("click",async()=>{const u=new URL(location.href);u.hash=`#shop/p/${p.id}`;u.searchParams.delete('q');u.searchParams.delete('sort');u.searchParams.delete('stock');u.searchParams.delete('min');u.searchParams.delete('max');try{if(navigator.share)await navigator.share({title:p.name,text:`${p.name}｜${DB.settings.get().name}`,url:u.href});else{await navigator.clipboard.writeText(u.href);toast('商品網址已複製');}}catch(e){if(e.name!=='AbortError')toast('無法分享，請手動複製網址','error');}});
+    document.getElementById("sp-restock").addEventListener("click",()=>{const v=match();if(!v||v.stock>0)return;const me=DB.auth.current()||{},wrap=document.createElement('div');wrap.className='modal-backdrop shop-modal';wrap.innerHTML=`<form class="modal"><h3>到貨通知我</h3><p class="small">${esc(p.name)}${Object.values(v.options).length?'・'+esc(Object.values(v.options).join(' / ')):''} 補貨時，店家會依這份名單聯絡你。</p><div class="field"><label for="rr-email">Email</label><input id="rr-email" type="email" required value="${esc(me.email||'')}" placeholder="name@example.com"></div><div class="modal-actions"><button type="button" class="btn" id="rr-cancel">取消</button><button class="btn btn-primary" type="submit">登記通知</button></div></form>`;document.body.appendChild(wrap);document.getElementById('rr-cancel').onclick=()=>wrap.remove();wrap.querySelector('form').onsubmit=async e=>{e.preventDefault();const btn=e.target.querySelector('[type=submit]');btn.disabled=true;try{await DB.restocks.request(p.id,v.id,document.getElementById('rr-email').value,me.phone||'');wrap.remove();toast('已登記，到貨後店家會通知你');}catch(err){toast(err.message,'error');btn.disabled=false;}};});
   }
 
   function bindFavorites(after) {

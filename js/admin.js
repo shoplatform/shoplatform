@@ -32,17 +32,17 @@
   ];
   const PAGE_PERM = { orders: "orders", order: "orders", customers: "customers", customer: "customers", reports: "reports",
     products: "products", product: "products", categories: "products", reviews: "products",
-    stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory", counts: "inventory", count: "inventory",
+    stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory", counts: "inventory", count: "inventory", restocks:"inventory",
     coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
     theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner", plan: "owner", returns: "orders" };
   const can = p => DB.admin.can(p);
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
     const groups = [
-      ["", [["admin", "dash", "總覽", "", true]]],
+      ["", [["admin", "dash", "總覽", "", true],["admin/notifications","notifications","通知中心","",true]]],
       ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
-      ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
+      ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/restocks", "restocks", "補貨通知名單", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
       ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/bundles", "bundles", "組合與加購", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
       ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")], ["admin/plan", "plan", "方案與續約", "", can("owner")]]],
     ];
@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.40 · 資料庫已連線" : "v0.40 · 離線示範版"}</div>
+            <div>${remote ? "v0.44 · 資料庫已連線" : "v0.44 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -2659,6 +2659,9 @@
 
   async function viewCounts(id){shell('counts',`<div class="page-head"><h1>庫存盤點</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.stockCounts.list(),x=id&&rows.find(y=>y.id===id);if(x){document.getElementById('main').innerHTML=`<div class="page-head"><div class="crumbs"><a href="#admin/counts">庫存盤點</a><span>/</span><span>${esc(x.number)}</span></div><div class="actions"><button class="btn" id="sc-save">儲存</button>${x.status==='draft'?'<button class="btn btn-primary" id="sc-done">完成盤點</button>':''}</div></div><section class="panel"><div class="table-wrap"><table class="tbl"><thead><tr><th>商品</th><th>SKU</th><th class="r">系統數量</th><th class="r">實際數量</th><th class="r">差異</th></tr></thead><tbody>${x.items.map((it,i)=>`<tr><td>${esc(it.name)}<span class="small muted">${esc(it.optionText||'')}</span></td><td>${esc(it.sku||'')}</td><td class="r">${it.systemQty}</td><td class="r"><input class="sc-q" data-i="${i}" type="number" min="0" value="${it.actualQty}" ${x.status!=='draft'?'disabled':''} style="width:90px"></td><td class="r">${it.actualQty-it.systemQty}</td></tr>`).join('')}</tbody></table></div></section>`;const vals=()=>x.items.map((it,i)=>Object.assign({},it,{actualQty:+document.querySelector(`[data-i="${i}"]`).value||0}));document.getElementById('sc-save').onclick=async()=>{await DB.stockCounts.save(x.id,vals(),x.note);toast('盤點內容已儲存');viewCounts(x.id);};const done=document.getElementById('sc-done');if(done)done.onclick=async()=>{await DB.stockCounts.save(x.id,vals(),x.note);if(await confirmBox({title:'完成盤點？',body:'系統會依實際數量校正庫存，並留下每筆異動紀錄。',ok:'完成盤點'})){await DB.stockCounts.complete(x.id);toast('已完成盤點並校正庫存');viewCounts(x.id);}};return;}document.getElementById('main').innerHTML=`<div class="page-head"><h1>庫存盤點</h1><button class="btn btn-primary" id="sc-new">建立盤點單</button></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><tbody>${rows.map(r=>`<tr class="is-link" data-href="admin/count/${r.id}"><td>${esc(r.number)}</td><td>${r.items.length} 個規格</td><td><span class="pill ${r.status==='completed'?'ok':'warn'}">${r.status==='completed'?'已完成':'草稿'}</span></td><td>${date(r.createdAt,true)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有盤點單</div>'}</section>`;document.getElementById('sc-new').onclick=async()=>{try{const rid=await DB.stockCounts.create(prompt('盤點備註（可留空）','')||'');Router.go('admin/count/'+rid);}catch(e){toast(e.message,'error');}};}catch(e){document.getElementById('main').innerHTML=`<div class="notice">${esc(e.message)}</div>`;}}
 
+  async function viewRestocks(){shell('restocks',`<div class="page-head"><h1>補貨通知名單</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.restocks.adminList('');document.getElementById('main').innerHTML=`<div class="page-head"><h1>補貨通知名單</h1><div class="actions"><button class="btn" id="rr-export">匯出 CSV</button><button class="btn btn-primary" id="rr-done">標記已通知</button></div></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th><input type="checkbox" id="rr-all"></th><th>商品／規格</th><th>Email</th><th>手機</th><th>登記時間</th><th>狀態</th></tr></thead><tbody>${rows.map(r=>`<tr><td><input type="checkbox" class="rr-pick" value="${r.id}" ${r.status!=='waiting'?'disabled':''}></td><td>${esc(r.productName)}<div class="small muted">${esc(r.optionText||'')}</div></td><td>${esc(r.email)}</td><td>${esc(r.phone||'—')}</td><td>${date(r.createdAt,true)}</td><td><span class="pill ${r.status==='waiting'?'warn':'ok'}">${r.status==='waiting'?'等待通知':'已通知'}</span></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">目前沒有補貨登記</div>'}</section><p class="small muted">目前先匯出名單後由商家自行寄信或聯絡；未來串接寄信服務後可自動發送。</p>`;const picked=()=>[...document.querySelectorAll('.rr-pick:checked')].map(x=>x.value);const all=document.getElementById('rr-all');if(all)all.onchange=()=>document.querySelectorAll('.rr-pick:not(:disabled)').forEach(x=>x.checked=all.checked);document.getElementById('rr-done').onclick=async()=>{const ids=picked();if(!ids.length)return toast('請先勾選名單','error');await DB.restocks.markNotified(ids);toast('已標記為已通知');viewRestocks();};document.getElementById('rr-export').onclick=()=>{const csv=['商品,規格,Email,手機,狀態,登記時間',...rows.map(r=>[r.productName,r.optionText,r.email,r.phone,r.status,r.createdAt].map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(','))].join('\n');download(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}),`補貨通知名單_${new Date().toISOString().slice(0,10)}.csv`);};}catch(e){toast(e.message,'error');}}
+  async function viewNotifications(){shell('notifications',`<div class="page-head"><h1>通知中心</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const x=await DB.notifications.list(),rows=x.items||[];document.getElementById('main').innerHTML=`<div class="page-head"><h1>通知中心</h1><button class="btn" id="nt-read">全部標為已讀</button></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><tbody>${rows.map(n=>`<tr class="is-link" data-href="${esc(n.link)}"><td><span class="pill info">${{order:'訂單',return:'售後',restock:'補貨'}[n.kind]||'通知'}</span></td><td><b>${esc(n.title)}</b><div class="small muted">${esc(n.text||'')}</div></td><td>${date(n.at,true)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">目前沒有新通知</div>'}</section>`;document.getElementById('nt-read').onclick=async()=>{await DB.notifications.read();toast('已全部標為已讀');viewNotifications();};}catch(e){toast(e.message,'error');}}
+
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
     if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
@@ -2673,6 +2676,7 @@
       case "orders": return viewOrders(arg);
       case "order": return viewOrder(arg);
       case "returns": return viewReturns();
+      case "notifications": return viewNotifications();
       case "customers": return viewCustomers();
       case "customer": return viewCustomer(arg);
       case "settings": return viewSettings();
@@ -2686,6 +2690,7 @@
       case "page": return viewPageEdit(arg);
       case "tiers": return viewTiers();
       case "stock": return viewStock();
+      case "restocks": return viewRestocks();
       case "counts": return viewCounts();
       case "count": return viewCounts(arg);
       case "moves": return viewMoves(arg);

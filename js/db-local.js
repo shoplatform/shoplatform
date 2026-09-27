@@ -1340,7 +1340,7 @@
     planInfo: () => ({tier:"pro",limits:{products:2000,staff:20,images:5000},usage:{products:S().products.length,staff:1,images:S().products.reduce((n,p)=>n+(p.images||[]).length,0)}}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.40", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.44", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     planStatus: async () => ({tier:"pro",entitlements:{staff:true,reports:true,bundles:true,customerTags:true,customPages:true,advancedInventory:true},billing:null,requests:[]}),
     requestService: async () => uid("req"), cancelServiceRequest: async () => {},
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
@@ -1356,11 +1356,13 @@
     async save(id,items,note){const x=(S().stockCounts||[]).find(y=>y.id===id);if(x&&x.status==='draft'){x.items=clone(items);x.note=note||'';commit();}},
     async complete(id){const x=(S().stockCounts||[]).find(y=>y.id===id);if(!x)return;for(const it of x.items){const hit=findVariant(it.variantId);if(hit){const d=it.actualQty-hit.v.stock;hit.v.stock=it.actualQty;if(d)logMove(hit.p,hit.v,d,'adjust',x.number,'盤點校正');}}x.status='completed';x.completedAt=new Date().toISOString();commit();}
   };
+  const restocks={async request(productId,variantId,email,phone){S().restockRequests=S().restockRequests||[];const p=products.get(productId),id=uid('rr');S().restockRequests.unshift({id,productId,productName:p?p.name:'商品',variantId,email,phone,status:'waiting',createdAt:new Date().toISOString()});commit();return id;},adminList:async status=>clone((S().restockRequests||[]).filter(x=>!status||x.status===status)),async markNotified(ids){let n=0;(S().restockRequests||[]).forEach(x=>{if(ids.includes(x.id)&&x.status==='waiting'){x.status='notified';x.notifiedAt=new Date().toISOString();n++;}});commit();return n;}};
+  const notifications={async list(){const items=[];(S().restockRequests||[]).filter(x=>x.status==='waiting').forEach(x=>items.push({kind:'restock',title:'新的補貨需求',text:x.productName+'・'+x.email,at:x.createdAt,link:'admin/restocks'}));return {readAt:'',items};},read:async()=>{}};
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, reviews, favorites, returns, stockCounts,
+    inventory, suppliers, purchases, reports, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),
