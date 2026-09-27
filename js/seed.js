@@ -251,7 +251,7 @@ window.makeSeed = function () {
           { id: "c_wear", name: "服飾配件" },
           { id: "c_scent", name: "香氛" },
         ],
-        products, customers, customerTags, orders, coupons, promotions, bundleOffers, suppliers, purchases, movements,
+        products, customers, customerTags, orders, coupons, promotions, bundleOffers, pages:[{id:"pg_about",slug:"about",title:"關於我們",content:"晨霧選物希望把耐用、舒服的日常用品帶進你的生活。",enabled:true,sort:0,createdAt:iso(1)}], suppliers, purchases, movements,
         memberTiers: {
           enabled: true, period: "all",
           tiers: [

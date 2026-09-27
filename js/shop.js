@@ -121,6 +121,7 @@
         <footer class="s-foot"><div class="s-wrap">
           <span>© ${new Date().getFullYear()} ${esc(st.name)}</span>
           <span>客服 ${esc(st.email)}${st.phone ? ` · ${esc(st.phone)}` : ""}</span>
+          ${DB.pages.list().filter(p=>p.enabled!==false).map(p=>`<a href="#shop/page/${esc(p.slug)}">${esc(p.title)}</a>`).join("")}
           ${st.returnPolicy ? `<a href="#shop/policy">退換貨政策</a>` : ""}
           ${poweredBy()}
         </div></footer>
@@ -135,6 +136,7 @@
     const st = DB.settings.get();
     shell(`<div class="s-wrap s-page s-narrow"><h1>退換貨政策</h1><section class="s-box" style="white-space:pre-wrap;line-height:1.8">${st.returnPolicy ? esc(st.returnPolicy) : "店家尚未公布退換貨政策，購買前請先聯絡客服確認。"}</section></div>`);
   }
+  function viewCustomPage(slug){const p=DB.pages.get(slug);if(!p||p.enabled===false)return shell(`<div class="s-wrap s-page s-narrow"><div class="s-box"><div class="empty">找不到這個頁面</div></div></div>`);shell(`<div class="s-wrap s-page s-narrow"><h1>${esc(p.title)}</h1><section class="s-box" style="white-space:pre-wrap;line-height:1.8">${esc(p.content)}</section></div>`);}
 
   /* ---------- 商品評價 ---------- */
   const stars = (n, big) => `<span class="stars${big ? " is-big" : ""}" role="img" aria-label="${n} 顆星（滿分 5 顆）">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= Math.round(n) ? "on" : ""}" aria-hidden="true">★</i>`).join("")}</span>`;
@@ -1071,6 +1073,7 @@
       case "checkout": return viewCheckout();
       case "done": return viewDone(arg);
       case "policy": return viewPolicy();
+      case "page": return viewCustomPage(parts[2]);
       case "login": case "register": case "account": case "join": case "forgot": case "reset":
         if (!DB.features.members) return membersSoon();
         if (DB.auth.mode === "email") {

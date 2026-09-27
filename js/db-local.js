@@ -34,6 +34,7 @@
       store.products.forEach(p => { if (!Array.isArray(p.images)) p.images = []; });
       if (store.settings.returnPolicy === undefined) store.settings.returnPolicy = "";
       if (!store.bundleOffers) store.bundleOffers = [];
+      if (!store.pages) store.pages = [];
     });
     if (!s.sessions) s.sessions = {};
     if ((s.version || 1) < 3 && s.stores.demo) {
@@ -831,6 +832,7 @@
     save(input) { const d=clone(input); d.name=String(d.name||"").trim(); if(!d.name) throw new Error("請填寫活動名稱"); if(!["bundle","addon"].includes(d.type)) throw new Error("請選擇活動種類"); if(!d.triggerProduct||!d.targetProduct||d.triggerProduct===d.targetProduct) throw new Error("請選擇兩個不同商品"); d.value=Math.max(0,Math.floor(+d.value||0)); if(d.type==="bundle"&&!d.value) throw new Error("組合折抵金額要大於 0"); if(d.startAt&&d.endAt&&d.startAt>d.endAt) throw new Error("結束日期不能早於開始日期"); d.enabled=!!d.enabled; S().bundleOffers=S().bundleOffers||[]; if(!d.id){d.id=uid("bo");d.createdAt=new Date().toISOString();S().bundleOffers.push(d);}else{const i=S().bundleOffers.findIndex(x=>x.id===d.id);if(i<0)throw new Error("找不到這個活動");S().bundleOffers[i]=Object.assign({},S().bundleOffers[i],d);} commit(); return clone(d); },
     remove(id) { S().bundleOffers=(S().bundleOffers||[]).filter(x=>x.id!==id); commit(); },
   };
+  const pages={list:()=>clone(S().pages||[]),get:id=>clone((S().pages||[]).find(x=>x.id===id||x.slug===id)||null),save(x){const d=clone(x);d.title=String(d.title||"").trim();d.slug=String(d.slug||"").trim().toLowerCase();if(!/^[a-z0-9-]{2,40}$/.test(d.slug))throw new Error("網址代號限 2～40 個小寫英文字母、數字或連字號");if(!d.title)throw new Error("請填寫頁面名稱");S().pages=S().pages||[];if(!d.id){d.id=uid("pg");d.createdAt=new Date().toISOString();S().pages.push(d);}else{const i=S().pages.findIndex(p=>p.id===d.id);S().pages[i]=Object.assign({},S().pages[i],d);}commit();return clone(d);},remove(id){S().pages=(S().pages||[]).filter(x=>x.id!==id);commit();}};
 
   /* ---------- 會員等級 ----------
    * 等級看「有效消費」：已付款以上（待出貨、已出貨、已完成）且沒取消的訂單總額。
@@ -1334,14 +1336,15 @@
   const features = { members: true, images: true, inventory: true, tiers: true, reset: true, platform: false, staff: false };
   const ready = async () => ({ state: "ok" });
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
+    announcements: () => [],
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.27", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.30", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, tiers,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
     inventory, suppliers, purchases, reports, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },

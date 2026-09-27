@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.27）
+ * db.js — 資料層（Supabase 資料庫版，v0.30）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -114,7 +114,7 @@
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", returnPolicy: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
-      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], bundleOffers: [], store: {},
+      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], bundleOffers: [], pages: [], store: {},
       memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }
   // 規格的 options 依照商品規格順序重排（資料庫存的 JSON 不保留欄位順序）
@@ -162,6 +162,7 @@
   const lastStore = () => { try { return localStorage.getItem(LAST_KEY) || ""; } catch (e) { return ""; } };
   const resetAdmin = () => { adminStore = null; cache.admin = null; myStores = null; isPlatform = false; cache.platform = null; };
   const admin = {
+    announcements: () => clone((cache.admin && cache.admin.announcements) || []),
     user: () => adminUser && { email: adminUser.email, id: adminUser.id },
     store: () => adminStore,
     stores: () => clone(myStores || []),
@@ -286,6 +287,8 @@
     async setSuspended(store, on, reason) { await rpc("platform_set_suspended", { p_store: store, p_suspended: !!on, p_reason: reason || "" }); await afterPlatform(); },
     async saveNote(store, note) { await rpc("platform_save_note", { p_store: store, p_note: note || "" }); await afterPlatform(); },
     async saveSettings(v) { await rpc("platform_save_settings", { p_settings: v }); cache.home = null; await afterPlatform(); },
+    async saveAnnouncement(v) { const id=await rpc("platform_save_announcement",{p_item:v});await afterPlatform();return id; },
+    async deleteAnnouncement(id) { await rpc("platform_delete_announcement",{p_id:id});await afterPlatform(); },
     exportData: () => rpc("platform_export_data"),
     reload: () => loadPlatform(),
   };
@@ -903,6 +906,9 @@
     async save(input) { const id = await rpc("admin_save_bundle_offer", { p_store: adminStore.id, p_offer: input }); await afterWrite(); return bundles.get(id); },
     async remove(id) { await rpc("admin_delete_bundle_offer", { p_store: adminStore.id, p_id: id }); await afterWrite(); },
   };
+  const pages = { list:()=>clone(C().pages||[]), get:id=>(C().pages||[]).find(x=>x.id===id||x.slug===id)||null,
+    async save(x){const id=await rpc("admin_save_page",{p_store:adminStore.id,p_page:x});await afterWrite();return pages.get(id);},
+    async remove(id){await rpc("admin_delete_page",{p_store:adminStore.id,p_id:id});await afterWrite();} };
 
   /* ---------- 報表（從後台快取算） ---------- */
   function stats() {
@@ -986,7 +992,7 @@
   window.DB = {
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
-    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, tiers,
+    settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
     inventory, suppliers, purchases, reports, staff, reviews, favorites,
     onChange: fn => listeners.push(fn),
     reset: notYet,

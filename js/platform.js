@@ -193,12 +193,13 @@
             ${link("platform", "dash", "總覽")}
             ${link("platform/stores", "stores", "商店", soon || "")}
             ${link("platform/billing", "billing", "收款與異動")}
+            ${link("platform/announcements", "announcements", "商家公告")}
             ${link("platform/settings", "settings", "平台設定")}
           </nav>
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.27 · 平台管理者</div>
+            <div>v0.30 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -210,14 +211,16 @@
   const isSoon = s => (s.billing.status === "trial" || s.billing.status === "paid") && s.billing.daysLeft <= 30;
   const ownerText = s => s.owners.join("、") || "—";
   const storeCell = s => `<div style="display:grid"><b>${esc(s.name)}</b><span class="mono small muted">${esc(s.slug)}</span></div>`;
+  const bytes=n=>n>=1073741824?(n/1073741824).toFixed(1)+" GB":n>=1048576?(n/1048576).toFixed(1)+" MB":n>=1024?Math.round(n/1024)+" KB":(n||0)+" B";
+  const usageHigh=s=>(s.imageBytes||0)>=800*1048576||s.products>=1000||s.orders>=50000;
 
   function storesTable(list, empty) {
     if (!list.length) return `<div class="empty">${esc(empty || "沒有商店")}</div>`;
     return `<div class="table-wrap"><table class="tbl">
-      <thead><tr><th>商店</th><th>店主</th><th>狀態</th><th>到期</th><th class="r">商品</th><th class="r">30 天訂單</th><th class="r">30 天營收</th><th>開店日</th></tr></thead>
+      <thead><tr><th>商店</th><th>店主</th><th>狀態</th><th>到期</th><th class="r">商品</th><th class="r">圖片容量</th><th class="r">30 天訂單</th><th class="r">30 天營收</th><th>開店日</th></tr></thead>
       <tbody>${list.map(s => `<tr class="is-link" data-href="platform/store/${s.id}">
         <td>${storeCell(s)}</td><td class="small">${esc(ownerText(s))}</td><td>${Billing.pill(s.billing)}</td>
-        <td class="small">${esc(Billing.short(s.billing))}</td><td class="r num">${s.products}</td><td class="r num">${s.orders30}</td>
+        <td class="small">${esc(Billing.short(s.billing))}</td><td class="r num">${s.products}${usageHigh(s)?' <span class="pill warn">注意</span>':""}</td><td class="r num">${bytes(s.imageBytes)}</td><td class="r num">${s.orders30}</td>
         <td class="r num">${money(s.revenue30)}</td><td class="small">${date(s.createdAt)}</td></tr>`).join("")}</tbody>
     </table></div>`;
   }
@@ -309,6 +312,7 @@
               <dt>開店日</dt><dd>${date(s.createdAt)}</dd>
               <dt>方案</dt><dd>${esc(Billing.line(b))}</dd>
               <dt>規模</dt><dd>商品 ${s.products} · 會員 ${s.customers} · 訂單 ${s.orders}</dd>
+              <dt>使用量</dt><dd>上架 ${s.activeProducts} 項 · 規格 ${s.variants} 個 · 圖片 ${s.images} 張（${bytes(s.imageBytes)}）${usageHigh(s)?' <span class="pill warn">用量較高</span>':""}</dd>
               <dt>近 30 天</dt><dd>${s.orders30} 筆訂單 · 營收 ${money(s.revenue30)}${s.lastOrderAt ? ` · 最後下單 ${date(s.lastOrderAt)}` : ""}</dd>
             </dl>
             <div class="field"><label for="ps-note">平台備註（商家看不到）</label><textarea id="ps-note" rows="3" placeholder="例如：介紹人、聯絡紀錄">${esc(s.note)}</textarea></div>
@@ -417,6 +421,8 @@
       </section>`);
   }
 
+  function viewAnnouncements(editId){const d=DB.platform.data(),list=d.announcements||[],x=list.find(a=>a.id===editId)||{title:"",content:"",startAt:"",endAt:"",enabled:true};shell("announcements",`<div class="page-head"><h1>商家公告</h1></div><div class="grid-2"><section class="panel"><div class="panel-head"><h2>${editId?"編輯公告":"發布公告"}</h2></div><div class="panel-body"><div class="field"><label for="pa-title">標題</label><input id="pa-title" maxlength="80" value="${esc(x.title)}"></div><div class="field"><label for="pa-content">內容</label><textarea id="pa-content" rows="8" maxlength="5000">${esc(x.content)}</textarea></div><div class="grid-form"><div class="field"><label for="pa-start">開始日期</label><input type="date" id="pa-start" value="${esc(x.startAt||"")}"></div><div class="field"><label for="pa-end">結束日期</label><input type="date" id="pa-end" value="${esc(x.endAt||"")}"></div></div><label class="check"><input type="checkbox" id="pa-on" ${x.enabled!==false?"checked":""}> 啟用</label><div class="actions"><button class="btn btn-primary" id="pa-save">${editId?"儲存":"發布"}</button>${editId?'<a class="btn" href="#platform/announcements">取消</a>':""}</div></div></section><section class="panel"><div class="panel-head"><h2>公告紀錄</h2></div>${list.length?`<div class="table-wrap"><table class="tbl"><tbody>${list.map(a=>`<tr><td><b>${esc(a.title)}</b><div class="small muted">${esc(a.content).slice(0,80)}</div></td><td>${a.state}</td><td><a class="btn btn-sm" href="#platform/announcements/${a.id}">編輯</a> <button class="btn btn-sm" data-pa-del="${a.id}">刪除</button></td></tr>`).join("")}</tbody></table></div>`:'<div class="empty">還沒有公告</div>'}</section></div>`);document.getElementById("pa-save").onclick=async()=>{try{await DB.platform.saveAnnouncement({id:x.id,title:document.getElementById("pa-title").value,content:document.getElementById("pa-content").value,startAt:document.getElementById("pa-start").value,endAt:document.getElementById("pa-end").value,enabled:document.getElementById("pa-on").checked});toast("公告已儲存");viewAnnouncements();}catch(e){toast(e.message,"error");}};document.querySelectorAll("[data-pa-del]").forEach(b=>b.onclick=async()=>{if(await confirmBox({title:"刪除公告？",body:"商家後台將不再顯示。",ok:"刪除",danger:true})){await DB.platform.deleteAnnouncement(b.dataset.paDel);viewAnnouncements();}});}
+
   function viewSettings() {
     const v = DB.platform.data().settings;
     shell("settings", `
@@ -479,6 +485,7 @@
       case "stores": return viewStores(arg);
       case "store": return viewStore(arg);
       case "billing": return viewBilling(arg);
+      case "announcements": return viewAnnouncements(arg);
       case "settings": return viewSettings();
       default: return viewDash();
     }

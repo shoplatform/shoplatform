@@ -34,7 +34,7 @@
     products: "products", product: "products", categories: "products", reviews: "products",
     stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory",
     coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
-    theme: "settings", settings: "settings", staff: "owner" };
+    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner" };
   const can = p => DB.admin.can(p);
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
@@ -44,7 +44,7 @@
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
       ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
       ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/bundles", "bundles", "組合與加購", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
-      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")]]],
+      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")]]],
     ];
     return groups.map(([title, items]) => {
       const shown = items.filter(x => x[4]);
@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.27 · 資料庫已連線" : "v0.27 · 離線示範版"}</div>
+            <div>${remote ? "v0.30 · 資料庫已連線" : "v0.30 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -644,6 +644,7 @@
     let restock = [];
     if (can("inventory")) { try { restock = await DB.inventory.restockSuggestions(); } catch (e) { restock = []; } }
     const recent = DB.orders.list().slice(0, 6);
+    const announcements=(DB.admin.announcements?DB.admin.announcements():[]).map(a=>`<div class="notice"><b>${esc(a.title)}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(a.content)}</div></div>`).join("");
     const lowPanel = can("inventory") ? `<section class="panel">
           <div class="panel-head"><h2>補貨建議</h2><div class="actions"><a class="small" href="#admin/stock">全部庫存</a><a class="btn btn-sm" href="#admin/purchase/new">建立進貨單</a></div></div>
           ${restock.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>商品／規格</th><th class="r">庫存</th><th class="r">近 30 天</th><th>預估</th><th class="r">在途</th><th class="r">建議補貨</th></tr></thead><tbody>
@@ -662,12 +663,14 @@
     if (!can("orders")) {
       return shell("dash", `
         <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
+        ${announcements}
         ${DB.mode === "remote" ? storeUrlBox() : ""}
         <div class="notice">你是這家店的員工，可以使用：${esc(DB.admin.me().perms.map(permName).join("、") || "（沒有權限）")}。</div>
         ${lowPanel}`);
     }
     shell("dash", `
       <div class="page-head"><h1>總覽</h1><div class="actions">${DB.mode === "remote" ? notificationButton() : ""}<span class="muted">${date(new Date().toISOString())}</span></div></div>
+      ${announcements}
       ${DB.mode === "remote" ? storeUrlBox() : ""}
       <div class="kpis">
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>
@@ -2518,6 +2521,9 @@
     });
   }
 
+  function viewPages(){const list=DB.pages.list();shell("pages",`<div class="page-head"><h1>自訂頁面</h1><a class="btn btn-primary" href="#admin/page/new">新增頁面</a></div><section class="panel">${list.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>名稱</th><th>網址代號</th><th>狀態</th></tr></thead><tbody>${list.map(x=>`<tr class="is-link" data-href="admin/page/${x.id}"><td>${esc(x.title)}</td><td class="mono">${esc(x.slug)}</td><td>${x.enabled!==false?'<span class="pill ok">顯示中</span>':'<span class="pill idle">已隱藏</span>'}</td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">還沒有自訂頁面</div>`}</section>`);}
+  function viewPageEdit(id){const isNew=id==="new",x=isNew?{title:"",slug:"",content:"",enabled:true,sort:0}:DB.pages.get(id);if(!x)return notFound("找不到這個頁面","admin/pages");shell("pages",`<div class="page-head"><div class="crumbs"><a href="#admin/pages">自訂頁面</a><span>/</span><span>${isNew?"新增":esc(x.title)}</span></div><div class="actions">${isNew?"":'<button class="btn" id="pg-del">刪除</button>'}<button class="btn btn-primary" id="pg-save">儲存</button></div></div><section class="panel"><div class="panel-body"><div class="field"><label for="pg-title">頁面名稱</label><input id="pg-title" maxlength="60" value="${esc(x.title)}" placeholder="例如 關於我們"></div><div class="field"><label for="pg-slug">網址代號</label><input id="pg-slug" maxlength="40" value="${esc(x.slug)}" placeholder="about"><span class="hint">限小寫英文、數字和連字號</span></div><div class="field"><label for="pg-content">頁面內容</label><textarea id="pg-content" rows="16" maxlength="20000">${esc(x.content)}</textarea><span class="hint">換行會保留；為安全起見不執行 HTML 程式碼</span></div><label class="check"><input type="checkbox" id="pg-on" ${x.enabled!==false?"checked":""}> 顯示在商店頁尾</label></div></section>`);const val=()=>({id:x.id,title:document.getElementById("pg-title").value,slug:document.getElementById("pg-slug").value,content:document.getElementById("pg-content").value,enabled:document.getElementById("pg-on").checked,sort:x.sort||0});document.getElementById("pg-save").onclick=async()=>{try{const s=await DB.pages.save(val());toast("已儲存頁面");Router.go("admin/page/"+s.id);}catch(e){toast(e.message,"error");}};const d=document.getElementById("pg-del");if(d)d.onclick=async()=>{if(await confirmBox({title:`刪除「${x.title}」？`,body:"刪除後顧客無法再開啟。",ok:"刪除",danger:true})){await DB.pages.remove(x.id);Router.go("admin/pages");}};}
+
   function viewBundles() {
     const list=DB.bundles.list();
     shell("bundles", `<div class="page-head"><h1>組合與加購</h1><a class="btn btn-primary" href="#admin/bundle/new">新增活動</a></div><section class="panel">${list.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>名稱</th><th>優惠內容</th><th>期間</th><th>狀態</th></tr></thead><tbody>${list.map(x=>`<tr class="is-link" data-href="admin/bundle/${x.id}"><td>${esc(x.name)}</td><td>${esc(DB.bundles.describe(x))}</td><td class="small">${esc(periodText(x))}</td><td>${periodPill(x.state)}</td></tr>`).join("")}</tbody></table></div>`:`<div class="empty">還沒有組合或加購活動</div>`}</section><p class="small muted">同一筆購物車符合多個活動時，自動套用折扣最多的一個；滿額、會員與優惠碼仍照原規則計算。</p>`);
@@ -2649,6 +2655,8 @@
       case "promotion": return viewPromotionEdit(arg);
       case "bundles": return viewBundles();
       case "bundle": return viewBundleEdit(arg);
+      case "pages": return viewPages();
+      case "page": return viewPageEdit(arg);
       case "tiers": return viewTiers();
       case "stock": return viewStock();
       case "moves": return viewMoves(arg);
