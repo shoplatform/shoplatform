@@ -1337,9 +1337,10 @@
   const ready = async () => ({ state: "ok" });
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     announcements: () => [],
+    planInfo: () => ({tier:"pro",limits:{products:2000,staff:20,images:5000},usage:{products:S().products.length,staff:1,images:S().products.reduce((n,p)=>n+(p.images||[]).length,0)}}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.30", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.33", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {

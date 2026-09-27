@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.30 · 資料庫已連線" : "v0.30 · 離線示範版"}</div>
+            <div>${remote ? "v0.33 · 資料庫已連線" : "v0.33 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -644,6 +644,7 @@
     let restock = [];
     if (can("inventory")) { try { restock = await DB.inventory.restockSuggestions(); } catch (e) { restock = []; } }
     const recent = DB.orders.list().slice(0, 6);
+    const pi=DB.admin.planInfo?DB.admin.planInfo():null, planNotice=pi&&Object.keys(pi.limits).some(k=>(pi.usage[k]||0)>=(pi.limits[k]||Infinity)*.8)?`<div class="notice"><b>方案用量提醒</b><div class="small">商品 ${pi.usage.products||0}/${pi.limits.products||"—"}・員工 ${pi.usage.staff||0}/${pi.limits.staff||"—"}・圖片 ${pi.usage.images||0}/${pi.limits.images||"—"}</div></div>`:"";
     const announcements=(DB.admin.announcements?DB.admin.announcements():[]).map(a=>`<div class="notice"><b>${esc(a.title)}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(a.content)}</div></div>`).join("");
     const lowPanel = can("inventory") ? `<section class="panel">
           <div class="panel-head"><h2>補貨建議</h2><div class="actions"><a class="small" href="#admin/stock">全部庫存</a><a class="btn btn-sm" href="#admin/purchase/new">建立進貨單</a></div></div>
@@ -664,6 +665,7 @@
       return shell("dash", `
         <div class="page-head"><h1>總覽</h1><span class="muted">${date(new Date().toISOString())}</span></div>
         ${announcements}
+        ${planNotice}
         ${DB.mode === "remote" ? storeUrlBox() : ""}
         <div class="notice">你是這家店的員工，可以使用：${esc(DB.admin.me().perms.map(permName).join("、") || "（沒有權限）")}。</div>
         ${lowPanel}`);
@@ -671,6 +673,7 @@
     shell("dash", `
       <div class="page-head"><h1>總覽</h1><div class="actions">${DB.mode === "remote" ? notificationButton() : ""}<span class="muted">${date(new Date().toISOString())}</span></div></div>
       ${announcements}
+      ${planNotice}
       ${DB.mode === "remote" ? storeUrlBox() : ""}
       <div class="kpis">
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>

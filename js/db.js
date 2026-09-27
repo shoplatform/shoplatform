@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.30）
+ * db.js — 資料層（Supabase 資料庫版，v0.33）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -163,6 +163,7 @@
   const resetAdmin = () => { adminStore = null; cache.admin = null; myStores = null; isPlatform = false; cache.platform = null; };
   const admin = {
     announcements: () => clone((cache.admin && cache.admin.announcements) || []),
+    planInfo: () => clone(cache.admin ? {tier:cache.admin.serviceTier,limits:cache.admin.limits||{},usage:cache.admin.usage||{}} : {tier:"basic",limits:{},usage:{}}),
     user: () => adminUser && { email: adminUser.email, id: adminUser.id },
     store: () => adminStore,
     stores: () => clone(myStores || []),
@@ -285,6 +286,7 @@
     async setUntil(store, until, note) { await rpc("platform_set_until", { p_store: store, p_until: until, p_note: note || "" }); await afterPlatform(); },
     async setPlan(store, plan, note) { await rpc("platform_set_plan", { p_store: store, p_plan: plan, p_note: note || "" }); await afterPlatform(); },
     async setSuspended(store, on, reason) { await rpc("platform_set_suspended", { p_store: store, p_suspended: !!on, p_reason: reason || "" }); await afterPlatform(); },
+    async setServiceTier(store,tier){await rpc("platform_set_service_tier",{p_store:store,p_tier:tier});await afterPlatform();},
     async saveNote(store, note) { await rpc("platform_save_note", { p_store: store, p_note: note || "" }); await afterPlatform(); },
     async saveSettings(v) { await rpc("platform_save_settings", { p_settings: v }); cache.home = null; await afterPlatform(); },
     async saveAnnouncement(v) { const id=await rpc("platform_save_announcement",{p_item:v});await afterPlatform();return id; },
@@ -327,6 +329,7 @@
     MAX_SOURCE_MB: 15,
     ACCEPT: ["image/jpeg", "image/png", "image/webp", "image/gif"],
     async prepare(file) {
+      const lim=(cache.admin&&cache.admin.limits||{}).images||500, used=(cache.admin&&cache.admin.usage||{}).images||0; if(used>=lim) throw new Error("已達目前方案的圖片張數上限，請刪除不用的圖片或聯絡平台升級");
       if (!file || !media.ACCEPT.includes(file.type)) throw new Error(`「${file && file.name}」不是支援的圖片格式（JPG、PNG、WebP、GIF）`);
       if (file.size > media.MAX_SOURCE_MB * 1024 * 1024) throw new Error(`「${file.name}」超過 ${media.MAX_SOURCE_MB}MB`);
       const bmp = await decode(file);

@@ -194,12 +194,13 @@
             ${link("platform/stores", "stores", "商店", soon || "")}
             ${link("platform/billing", "billing", "收款與異動")}
             ${link("platform/announcements", "announcements", "商家公告")}
+            ${link("platform/analytics", "analytics", "營運分析")}
             ${link("platform/settings", "settings", "平台設定")}
           </nav>
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.30 · 平台管理者</div>
+            <div>v0.33 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -311,6 +312,7 @@
               <dt>客服</dt><dd>${esc(s.email || "—")}${s.phone ? ` · ${esc(s.phone)}` : ""}</dd>
               <dt>開店日</dt><dd>${date(s.createdAt)}</dd>
               <dt>方案</dt><dd>${esc(Billing.line(b))}</dd>
+              <dt>功能方案</dt><dd>${s.serviceTier === "pro" ? "進階版" : "基本版"}</dd>
               <dt>規模</dt><dd>商品 ${s.products} · 會員 ${s.customers} · 訂單 ${s.orders}</dd>
               <dt>使用量</dt><dd>上架 ${s.activeProducts} 項 · 規格 ${s.variants} 個 · 圖片 ${s.images} 張（${bytes(s.imageBytes)}）${usageHigh(s)?' <span class="pill warn">用量較高</span>':""}</dd>
               <dt>近 30 天</dt><dd>${s.orders30} 筆訂單 · 營收 ${money(s.revenue30)}${s.lastOrderAt ? ` · 最後下單 ${date(s.lastOrderAt)}` : ""}</dd>
@@ -346,6 +348,7 @@
           <section class="panel">
             <div class="panel-head"><h2>方案與停用</h2></div>
             <div class="panel-body">
+              <div class="toolbar"><label for="tier-sel" class="small muted">功能方案</label><select id="tier-sel"><option value="basic" ${s.serviceTier!=="pro"?"selected":""}>基本版</option><option value="pro" ${s.serviceTier==="pro"?"selected":""}>進階版</option></select><button class="btn btn-sm" id="tier-save" type="button">套用</button></div>
               <div class="toolbar"><label for="plan-sel" class="small muted">方案</label>
                 <select id="plan-sel">${[["trial", "試用"], ["paid", "付費（年費）"], ["free", "免費（平台自營、合作夥伴）"]].map(([k, t]) => `<option value="${k}" ${b.plan === k ? "selected" : ""}>${t}</option>`).join("")}</select>
                 <button class="btn btn-sm" id="plan-save" type="button">改方案</button></div>
@@ -394,6 +397,7 @@
       if (!(await confirmBox({ title: "改方案？", body: v === "free" ? "改成免費方案後，這家店不會到期。" : "改成試用或付費後，會依到期日決定是否營業。", ok: "確定改" }))) return;
       act(e.target, () => DB.platform.setPlan(id, v), "已改方案");
     });
+    document.getElementById("tier-save").addEventListener("click",e=>act(e.target,()=>DB.platform.setServiceTier(id,document.getElementById("tier-sel").value),"已更新功能方案"));
     const sus = document.getElementById("suspend");
     if (sus) sus.addEventListener("click", async () => {
       const reason = document.getElementById("sus-reason").value.trim();
@@ -423,6 +427,8 @@
 
   function viewAnnouncements(editId){const d=DB.platform.data(),list=d.announcements||[],x=list.find(a=>a.id===editId)||{title:"",content:"",startAt:"",endAt:"",enabled:true};shell("announcements",`<div class="page-head"><h1>商家公告</h1></div><div class="grid-2"><section class="panel"><div class="panel-head"><h2>${editId?"編輯公告":"發布公告"}</h2></div><div class="panel-body"><div class="field"><label for="pa-title">標題</label><input id="pa-title" maxlength="80" value="${esc(x.title)}"></div><div class="field"><label for="pa-content">內容</label><textarea id="pa-content" rows="8" maxlength="5000">${esc(x.content)}</textarea></div><div class="grid-form"><div class="field"><label for="pa-start">開始日期</label><input type="date" id="pa-start" value="${esc(x.startAt||"")}"></div><div class="field"><label for="pa-end">結束日期</label><input type="date" id="pa-end" value="${esc(x.endAt||"")}"></div></div><label class="check"><input type="checkbox" id="pa-on" ${x.enabled!==false?"checked":""}> 啟用</label><div class="actions"><button class="btn btn-primary" id="pa-save">${editId?"儲存":"發布"}</button>${editId?'<a class="btn" href="#platform/announcements">取消</a>':""}</div></div></section><section class="panel"><div class="panel-head"><h2>公告紀錄</h2></div>${list.length?`<div class="table-wrap"><table class="tbl"><tbody>${list.map(a=>`<tr><td><b>${esc(a.title)}</b><div class="small muted">${esc(a.content).slice(0,80)}</div></td><td>${a.state}</td><td><a class="btn btn-sm" href="#platform/announcements/${a.id}">編輯</a> <button class="btn btn-sm" data-pa-del="${a.id}">刪除</button></td></tr>`).join("")}</tbody></table></div>`:'<div class="empty">還沒有公告</div>'}</section></div>`);document.getElementById("pa-save").onclick=async()=>{try{await DB.platform.saveAnnouncement({id:x.id,title:document.getElementById("pa-title").value,content:document.getElementById("pa-content").value,startAt:document.getElementById("pa-start").value,endAt:document.getElementById("pa-end").value,enabled:document.getElementById("pa-on").checked});toast("公告已儲存");viewAnnouncements();}catch(e){toast(e.message,"error");}};document.querySelectorAll("[data-pa-del]").forEach(b=>b.onclick=async()=>{if(await confirmBox({title:"刪除公告？",body:"商家後台將不再顯示。",ok:"刪除",danger:true})){await DB.platform.deleteAnnouncement(b.dataset.paDel);viewAnnouncements();}});}
 
+  function viewAnalytics(){const rows=DB.platform.data().trend||[],cur=rows[rows.length-1]||{},max=Math.max(1,...rows.map(x=>x.gmv||0));shell("analytics",`<div class="page-head"><h1>營運分析</h1><span class="muted">最近 6 個月</span></div><div class="kpis"><div class="kpi"><span>本月新開店</span><strong>${cur.newStores||0}</strong></div><div class="kpi"><span>本月活躍商店</span><strong>${cur.activeStores||0}</strong></div><div class="kpi"><span>本月訂單</span><strong>${cur.orders||0}</strong></div><div class="kpi"><span>本月成交總額</span><strong>${money(cur.gmv||0)}</strong></div></div><section class="panel"><div class="panel-head"><h2>每月趨勢</h2></div><div class="table-wrap"><table class="tbl"><thead><tr><th>月份</th><th class="r">新開店</th><th class="r">活躍商店</th><th class="r">訂單</th><th>成交總額</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.month)}</td><td class="r num">${x.newStores}</td><td class="r num">${x.activeStores}</td><td class="r num">${x.orders}</td><td><div style="display:flex;align-items:center;gap:10px"><i style="display:block;height:8px;border-radius:9px;background:var(--accent);width:${Math.max(2,(x.gmv||0)/max*120)}px"></i><span class="num">${money(x.gmv||0)}</span></div></td></tr>`).join("")}</tbody></table></div></section><p class="small muted">活躍商店指該月有非取消訂單的商店；成交總額只計已付款、已出貨與已完成訂單。</p>`);}
+
   function viewSettings() {
     const v = DB.platform.data().settings;
     shell("settings", `
@@ -437,6 +443,7 @@
         <div class="panel-body grid-form">
           <div class="field"><label for="pf-name">平台名稱</label><input type="text" id="pf-name" value="${esc(v.platformName)}"><span class="hint">顯示在平台首頁與總控台</span></div>
           <div class="field"><label for="pf-fee">年費（NT$）</label><input type="number" id="pf-fee" min="0" step="1" value="${esc(v.annualFee)}"></div>
+          <div class="field"><label for="pf-pro-fee">進階版年費（NT$）</label><input type="number" id="pf-pro-fee" min="0" step="1" value="${esc(v.proAnnualFee || (+v.annualFee * 2))}"></div>
           <div class="field"><label for="pf-trial">免費試用天數</label><input type="number" id="pf-trial" min="0" max="90" step="1" value="${esc(v.trialDays)}"><span class="hint">只影響之後新開的商店</span></div>
           <div class="field"><label for="pf-max">每個帳號最多開幾家店</label><input type="number" id="pf-max" min="1" max="20" step="1" value="${esc(v.maxStoresPerUser)}"></div>
           <label class="check"><input type="checkbox" id="pf-open" ${v.signupOpen ? "checked" : ""}> 開放商家自助開店</label>
@@ -460,7 +467,7 @@
       const g = id => document.getElementById(id);
       e.target.disabled = true;
       try {
-        await DB.platform.saveSettings({ platformName: g("pf-name").value, annualFee: g("pf-fee").value, trialDays: g("pf-trial").value,
+        await DB.platform.saveSettings({ platformName: g("pf-name").value, annualFee: g("pf-fee").value, proAnnualFee: g("pf-pro-fee").value, trialDays: g("pf-trial").value,
           maxStoresPerUser: g("pf-max").value, signupOpen: g("pf-open").checked, contactEmail: g("pf-email").value, contactLine: g("pf-line").value,
           terms: g("pf-terms").value, privacy: g("pf-privacy").value });
         toast("已儲存平台設定"); viewSettings();
@@ -486,6 +493,7 @@
       case "store": return viewStore(arg);
       case "billing": return viewBilling(arg);
       case "announcements": return viewAnnouncements(arg);
+      case "analytics": return viewAnalytics();
       case "settings": return viewSettings();
       default: return viewDash();
     }
