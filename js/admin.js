@@ -75,7 +75,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.22 · 資料庫已連線" : "v0.22 · 離線示範版"}</div>
+            <div>${remote ? "v0.23 · 資料庫已連線" : "v0.23 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -1580,20 +1580,23 @@
   }
 
   /* ---------- 會員 ---------- */
-  let cq = "", ctier = "", cPage = 0;
+  let cq = "", ctier = "", ctag = "", cPage = 0;
   const SERVER_PAGE = 100;
   // 等級標籤：第幾級決定顏色深淺
   const tierPill = lv => lv ? `<span class="tier-pill t${Math.min(lv.index, 4)}">${esc(lv.tier.name)}</span>` : "";
-  function viewCustomers() {
+  const tagPills = tags => (tags || []).map(t => `<span class="pill">${esc(t.name)}</span>`).join(" ") || `<span class="muted">—</span>`;
+  async function viewCustomers() {
     const cfg = DB.tiers.get();
+    const tags = await DB.customers.tags();
     const on = cfg.enabled;
     if (!on) ctier = "";
     shell("customers", `
-      <div class="page-head"><h1>會員</h1>${on ? `<a class="btn" href="#admin/tiers">會員等級設定</a>` : ""}</div>
+      <div class="page-head"><h1>會員</h1><div class="actions"><button class="btn" id="c-tags">管理標籤</button><button class="btn" id="c-export">匯出 Excel</button>${on ? `<a class="btn" href="#admin/tiers">會員等級設定</a>` : ""}</div></div>
       <section class="panel">
         <div class="panel-head"><div class="toolbar">
           <input type="search" id="cq" placeholder="搜尋姓名、手機、Email" value="${esc(cq)}" aria-label="搜尋會員">
           ${on ? `<select id="ctier" aria-label="等級"><option value="">全部等級</option>${cfg.tiers.map(t => `<option value="${t.id}" ${ctier === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>` : ""}
+          <select id="ctag" aria-label="會員標籤"><option value="">全部標籤</option>${tags.map(t => `<option value="${t.id}" ${ctag === t.id ? "selected" : ""}>${esc(t.name)}（${t.count}）</option>`).join("")}</select>
         </div></div>
         <div id="c-list"></div>
       </section>`);
@@ -1604,13 +1607,13 @@
       const mine = ++request;
       el.innerHTML = `<div class="empty">載入中…</div>`;
       try {
-        const result = await DB.customers.query({ q: cq, tier: ctier }, { offset: cPage * SERVER_PAGE, limit: SERVER_PAGE });
+        const result = await DB.customers.query({ q: cq, tier: ctier, tag: ctag }, { offset: cPage * SERVER_PAGE, limit: SERVER_PAGE });
         if (mine !== request || !document.getElementById("c-list")) return;
         const list = result.rows || [], total = +result.total || 0;
         el.innerHTML = list.length ? `<div class="table-wrap"><table class="tbl">
-        <thead><tr><th>姓名</th>${on ? "<th>等級</th>" : ""}<th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
+        <thead><tr><th>姓名</th>${on ? "<th>等級</th>" : ""}<th>標籤</th><th>帳號</th><th>手機</th><th>Email</th><th class="r">訂單數</th><th class="r">累積消費</th><th>最後購買</th></tr></thead>
         <tbody>${list.map(c => `<tr class="is-link" data-href="admin/customer/${c.id}">
-          <td>${esc(c.name)}</td>${on ? `<td>${tierPill(c.level)}</td>` : ""}<td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
+          <td>${esc(c.name)}</td>${on ? `<td>${tierPill(c.level)}</td>` : ""}<td>${tagPills(c.tags)}</td><td>${accountPill(c)}</td><td class="mono">${esc(c.phone)}</td><td>${esc(c.email) || "—"}</td>
           <td class="r num">${c.orderCount}</td><td class="r num">${money(c.totalSpent)}</td><td class="num">${date(c.lastOrderAt)}</td>
         </tr>`).join("")}</tbody></table></div>
         <div class="pager"><span class="small muted">第 ${total ? cPage * SERVER_PAGE + 1 : 0}–${Math.min((cPage + 1) * SERVER_PAGE, total)} 位，共 ${total} 位</span><div class="actions"><button class="btn btn-sm" id="c-prev" ${cPage === 0 ? "disabled" : ""}>上一頁</button><button class="btn btn-sm" id="c-next" ${(cPage + 1) * SERVER_PAGE >= total ? "disabled" : ""}>下一頁</button></div></div>` : `<div class="empty">沒有符合的會員</div>`;
@@ -1624,6 +1627,30 @@
     document.getElementById("cq").addEventListener("input", e => { cq = e.target.value; cPage = 0; clearTimeout(timer); timer = setTimeout(draw, 250); });
     const sel = document.getElementById("ctier");
     if (sel) sel.addEventListener("change", e => { ctier = e.target.value; cPage = 0; draw(); });
+    document.getElementById("ctag").addEventListener("change", e => { ctag = e.target.value; cPage = 0; draw(); });
+    document.getElementById("c-tags").addEventListener("click", () => customerTagManager(tags, () => viewCustomers()));
+    document.getElementById("c-export").addEventListener("click", async e => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = "整理中…";
+      try {
+        const rows = []; let offset = 0, total = 0;
+        do { const r = await DB.customers.query({ q: cq, tier: ctier, tag: ctag }, { offset, limit: 200 }); total = +r.total || 0; rows.push(...r.rows); offset += r.rows.length; } while (offset < total);
+        download(XLSX.build([{ name: "會員", columns: [
+          { header: "姓名", width: 12 }, { header: "手機", width: 14 }, { header: "Email", width: 26 }, { header: "會員等級", width: 12 },
+          { header: "標籤", width: 24 }, { header: "訂單數", width: 10, type: "number" }, { header: "累積消費", width: 12, type: "number" },
+          { header: "最後購買", width: 18, type: "datetime" }, { header: "加入日期", width: 18, type: "datetime" }, { header: "帳號狀態", width: 10 }
+        ], rows: rows.map(c => [c.name, c.phone, c.email, c.level ? c.level.tier.name : "", (c.tags || []).map(t => t.name).join("、"), c.orderCount, c.totalSpent, c.lastOrderAt, c.createdAt, c.hasAccount ? "已開通" : "未開通"]) }]), `會員_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        toast(`已匯出 ${rows.length} 位會員`);
+      } catch (err) { toast(err.message, "error"); } finally { b.disabled = false; b.textContent = "匯出 Excel"; }
+    });
+  }
+
+  function customerTagManager(tags, after) {
+    const wrap = document.createElement("div"); wrap.className = "modal-backdrop";
+    wrap.innerHTML = `<div class="modal"><h3>管理會員標籤</h3><div class="field"><label for="tag-new">新增標籤</label><div class="actions"><input id="tag-new" maxlength="20" placeholder="例如 VIP、批發"><button class="btn btn-primary" id="tag-add">新增</button></div></div><div style="display:grid;gap:8px">${tags.map(t => `<div class="method-row"><span>${esc(t.name)}</span><span class="small muted">${t.count} 位</span><button class="btn btn-sm btn-ghost" data-tag-del="${t.id}">刪除</button></div>`).join("") || `<div class="empty">還沒有標籤</div>`}</div><div class="modal-actions"><button class="btn" data-close>完成</button></div></div>`;
+    document.body.appendChild(wrap); const close = () => { wrap.remove(); after(); };
+    wrap.querySelector("[data-close]").addEventListener("click", close);
+    wrap.querySelector("#tag-add").addEventListener("click", async () => { try { await DB.customers.saveTag(null, wrap.querySelector("#tag-new").value); close(); } catch (e) { toast(e.message, "error"); } });
+    wrap.addEventListener("click", async e => { const b = e.target.closest("[data-tag-del]"); if (!b) return; if (!await confirmBox({ title: "刪除標籤？", body: "會員身上的這個標籤也會一起移除。", ok: "刪除", danger: true })) return; try { await DB.customers.deleteTag(b.dataset.tagDel); if (ctag === b.dataset.tagDel) ctag = ""; close(); } catch (err) { toast(err.message, "error"); } });
   }
 
   /* ---------- 會員等級設定 ---------- */
@@ -1703,6 +1730,7 @@
   async function viewCustomer(id) {
     const c = await DB.customers.fetch(id);
     if (!c) return notFound("找不到這位會員", "admin/customers");
+    const allTags = await DB.customers.tags();
     const lv = DB.tiers.of(c.id);
     shell("customers", `
       <div class="page-head"><div class="crumbs"><a href="#admin/customers">會員</a><span>/</span><span>${esc(c.name)}</span></div></div>
@@ -1723,6 +1751,9 @@
             ? "他用下單時填的同一個 Email 在前台註冊會員後，這些訂單會自動接到他的帳號。"
             : "他用同一支手機在前台註冊後，就能登入看到這些訂單。"}</p>`}</div>
         </section>
+        <section class="panel"><div class="panel-head"><h2>會員標籤</h2><button class="btn btn-sm btn-primary" id="cu-tags-save">儲存標籤</button></div>
+          <div class="panel-body"><div style="display:flex;flex-wrap:wrap;gap:10px">${allTags.map(t => `<label class="check"><input type="checkbox" class="cu-tag" value="${t.id}" ${(c.tags || []).some(x => x.id === t.id) ? "checked" : ""}> ${esc(t.name)}</label>`).join("") || `<span class="muted">尚未建立標籤，請回會員列表點「管理標籤」。</span>`}</div></div>
+        </section>
         ${lv ? `<section class="panel"><div class="panel-head"><h2>會員等級</h2>${tierPill(lv)}</div>
           <div class="panel-body">
             <dl class="kv"><dt>有效消費</dt><dd class="num">${money(lv.spent)}</dd><dt>目前權益</dt><dd>${esc(DB.tiers.benefit(lv.tier))}</dd></dl>
@@ -1734,6 +1765,11 @@
           </div></section>` : ""}
         </div>
       </div>`);
+    const tagSave = document.getElementById("cu-tags-save");
+    if (tagSave) tagSave.addEventListener("click", async () => {
+      try { await DB.customers.setTags(c.id, [...document.querySelectorAll(".cu-tag:checked")].map(x => x.value)); toast("已儲存會員標籤"); }
+      catch (err) { toast(err.message, "error"); }
+    });
     // 近期清單以外的舊訂單：到資料庫拿這位會員的全部訂單
     if (c.orderCount > DB.orders.byCustomer(c.id).filter(o => o.status !== "cancelled").length) {
       DB.orders.ofCustomer(c.id).then(list => { const el = document.getElementById("cu-orders"); if (el) el.innerHTML = ordersTable(list); }).catch(() => {});

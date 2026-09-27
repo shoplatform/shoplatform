@@ -1,5 +1,5 @@
 /* =========================================================
- * db.js — 資料層（Supabase 資料庫版，v0.22）
+ * db.js — 資料層（Supabase 資料庫版，v0.23）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -493,12 +493,19 @@
       const x = (C().customerStats || {})[id];
       return x ? { orderCount: x.n, totalSpent: x.spent, lastOrderAt: x.last || "" } : { orderCount: 0, totalSpent: 0, lastOrderAt: "" };
     },
-    async query({ q = "", tier = "" } = {}, { offset = 0, limit = 100 } = {}) {
-      const result = await rpc("admin_search_customers", { p_store: adminStore.id, p_q: q, p_tier: tier, p_offset: offset, p_limit: limit });
+    async query({ q = "", tier = "", tag = "" } = {}, { offset = 0, limit = 100 } = {}) {
+      const result = await rpc("admin_search_customers", { p_store: adminStore.id, p_q: q, p_tier: tier, p_tag: tag || null, p_offset: offset, p_limit: limit });
       (result.rows || []).forEach(c => { extraCustomers[c.id] = c; });
       return result;
     },
     tierCounts: () => rpc("admin_customer_tier_counts", { p_store: adminStore.id }),
+    tags: () => rpc("admin_customer_tags", { p_store: adminStore.id }),
+    async saveTag(id, name) { return rpc("admin_save_customer_tag", { p_store: adminStore.id, p_id: id || null, p_name: name }); },
+    async deleteTag(id) { await rpc("admin_delete_customer_tag", { p_store: adminStore.id, p_id: id }); },
+    async setTags(customerId, ids) {
+      await rpc("admin_set_customer_tags", { p_store: adminStore.id, p_customer: customerId, p_tags: ids });
+      if (extraCustomers[customerId]) extraCustomers[customerId].tags = (await customers.tags()).filter(t => ids.includes(t.id)).map(({ id, name }) => ({ id, name }));
+    },
   };
 
   const notYet = async () => { throw new Error("這個功能在資料庫版還沒開放"); };

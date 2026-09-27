@@ -91,6 +91,9 @@ window.makeSeed = function () {
     { id: "u_3", name: "王思妤", phone: "0934567890", email: "szuyu@example.com", createdAt: iso(9) },
     { id: "u_4", name: "張家豪", phone: "0945678901", email: "chiahao@example.com", createdAt: iso(2) },
   ];
+  const customerTags = [{ id: "tag_vip", name: "VIP" }, { id: "tag_wholesale", name: "批發" }, { id: "tag_regular", name: "常客" }];
+  customers[0].tags = [customerTags[0], customerTags[2]];
+  customers[1].tags = [customerTags[1]];
   // 示範會員帳號：手機 0912345678、密碼 demo1234（其他人是結帳時自動建立、還沒開通帳號）
   customers[0].auth = window.DEMO_AUTH;
   customers[0].registeredAt = iso(27);
@@ -244,7 +247,7 @@ window.makeSeed = function () {
           { id: "c_wear", name: "服飾配件" },
           { id: "c_scent", name: "香氛" },
         ],
-        products, customers, orders, coupons, promotions, suppliers, purchases, movements,
+        products, customers, customerTags, orders, coupons, promotions, suppliers, purchases, movements,
         memberTiers: {
           enabled: true, period: "all",
           tiers: [

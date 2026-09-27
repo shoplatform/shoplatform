@@ -536,15 +536,33 @@
         lastOrderAt: os.map(o => o.createdAt).sort().pop() || "",
       };
     },
-    async query({ q = "", tier = "" } = {}, { offset = 0, limit = 100 } = {}) {
+    async query({ q = "", tier = "", tag = "" } = {}, { offset = 0, limit = 100 } = {}) {
       const all = customers.list(q).map(c => Object.assign(c, { level: tiers.of(c.id) }))
-        .filter(c => !tier || (c.level && c.level.tier.id === tier));
+        .filter(c => (!tier || (c.level && c.level.tier.id === tier)) && (!tag || (c.tags || []).some(t => t.id === tag)));
       return { total: all.length, rows: all.slice(offset, offset + limit) };
     },
     async tierCounts() {
       const out = {};
       S().customers.forEach(c => { const lv = tiers.of(c.id); if (lv) out[lv.tier.id] = (out[lv.tier.id] || 0) + 1; });
       return out;
+    },
+    async tags() {
+      S().customerTags = S().customerTags || [];
+      return clone(S().customerTags.map(t => Object.assign({}, t, { count: S().customers.filter(c => (c.tags || []).some(x => x.id === t.id)).length })));
+    },
+    async saveTag(id, name) {
+      S().customerTags = S().customerTags || []; name = String(name || "").trim();
+      if (!name || name.length > 20) throw new Error("標籤名稱要 1～20 個字");
+      if (S().customerTags.some(t => t.name.toLowerCase() === name.toLowerCase() && t.id !== id)) throw new Error("已經有同名標籤");
+      if (!id && S().customerTags.length >= 20) throw new Error("每家店最多 20 個會員標籤");
+      if (id) { const t = S().customerTags.find(x => x.id === id); if (!t) throw new Error("找不到這個標籤"); t.name = name; S().customers.forEach(c => (c.tags || []).forEach(x => { if (x.id === id) x.name = name; })); }
+      else { id = uid("tag"); S().customerTags.push({ id, name }); }
+      commit(); return id;
+    },
+    async deleteTag(id) { S().customerTags = (S().customerTags || []).filter(t => t.id !== id); S().customers.forEach(c => { c.tags = (c.tags || []).filter(t => t.id !== id); }); commit(); },
+    async setTags(customerId, ids) {
+      const c = S().customers.find(x => x.id === customerId); if (!c) throw new Error("找不到這位會員");
+      const all = S().customerTags || []; c.tags = all.filter(t => ids.includes(t.id)).map(clone); commit();
     },
     /* 沒登入的結帳：只用手機比對同一位顧客（Email 可能打錯或是別人的，不拿來比對）。
      * 已開通帳號的會員資料由本人維護，結帳時不覆蓋。 */
@@ -1286,7 +1304,7 @@
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.22", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.23", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
 
   window.DB = {
