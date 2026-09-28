@@ -1,5 +1,5 @@
-/* v0.45 ====================================================
- * db.js — 資料層（Supabase 資料庫版，v0.45）
+/* v0.52 ====================================================
+ * db.js — 資料層（Supabase 資料庫版，v0.52）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -43,7 +43,7 @@
   const storeUrl = slug => linkUrl({}, slug);
 
   // memberAuth：前台會員用 Email 帳號（離線示範版用手機）
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: false, memberAuth: "email", platform: true, staff: true };
+  const features = { members: true, images: true, inventory: true, tiers: true, pos: true, reset: false, memberAuth: "email", platform: true, staff: true };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const listeners = [];
@@ -114,7 +114,7 @@
   const C = () => (side === "admin" ? cache.admin : side === "shop" ? cache.shop : null) || cache.shop || empty();
   function empty() {
     return { settings: { name: "", tagline: "", email: "", phone: "", returnPolicy: "", freeShippingThreshold: 0, lowStockAlert: 3, shippingMethods: [], paymentMethods: [] },
-      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], bundleOffers: [], pages: [], store: {},
+      categories: [], products: [], customers: [], customerTotal: 0, orders: [], coupons: [], promotions: [], bundleOffers: [], pages: [], locations: [], store: {},
       memberTiers: { enabled: false, period: "all", tiers: [] }, suppliers: [], purchases: [], movements: [], loadedAt: 0 };
   }
   // 規格的 options 依照商品規格順序重排（資料庫存的 JSON 不保留欄位順序）
@@ -1020,11 +1020,28 @@
   /* ---------- 報表：由資料庫計算（全部訂單） ---------- */
   const reports = { get: (from, to) => rpc("admin_report", { p_store: adminStore.id, p_from: from, p_to: to }) };
 
+  /* ---------- POS、門市與全通路 ---------- */
+  const pos = {
+    locations: () => clone(C().locations || []),
+    async saveLocation(input) { const id = await rpc("admin_save_location", { p_store: adminStore.id, p_location: input }); await afterWrite(); return id; },
+    shifts: (limit = 100) => rpc("admin_pos_shifts", { p_store: adminStore.id, p_limit: limit }),
+    openShift: (locationId, openingCash) => rpc("admin_pos_open_shift", { p_store: adminStore.id, p_location: locationId, p_opening: Math.round(+openingCash || 0) }),
+    closeShift: (shiftId, actualCash, note) => rpc("admin_pos_close_shift", { p_store: adminStore.id, p_shift: shiftId, p_actual: Math.round(+actualCash || 0), p_note: note || "" }),
+    cashEvent: (shiftId, kind, amount, reason) => rpc("admin_pos_cash_event", { p_store: adminStore.id, p_shift: shiftId, p_kind: kind, p_amount: Math.round(+amount || 0), p_reason: reason || "" }),
+    async sale({ locationId, shiftId, items, discount, payment, customerId, note }) {
+      const o = await rpc("admin_pos_sale", { p_store: adminStore.id, p_location: locationId, p_shift: shiftId,
+        p_items: items.map(x => ({ variantId: x.variantId, qty: x.qty })), p_discount: Math.round(+discount || 0), p_payment: payment,
+        p_customer: customerId || null, p_note: note || "" });
+      await afterWrite(); return o;
+    },
+    channelReport: (from, to) => rpc("admin_channel_report", { p_store: adminStore.id, p_from: from, p_to: to }),
+  };
+
   window.DB = {
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, staff, reviews, favorites, returns, stockCounts, restocks, notifications,
+    inventory, suppliers, purchases, reports, pos, staff, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

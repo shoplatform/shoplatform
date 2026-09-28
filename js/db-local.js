@@ -1333,14 +1333,14 @@
   };
 
   // 跟 db.js（資料庫版）對齊的介面：示範版功能全開、不用登入
-  const features = { members: true, images: true, inventory: true, tiers: true, reset: true, platform: false, staff: false };
+  const features = { members: true, images: true, inventory: true, tiers: true, pos: true, reset: true, platform: false, staff: false };
   const ready = async () => ({ state: "ok" });
   const admin = { user: () => ({ email: "示範模式（資料只存在這個瀏覽器）" }), logout: async () => {}, login: async () => {}, signup: async () => ({}),
     announcements: () => [],
     planInfo: () => ({tier:"pro",limits:{products:2000,staff:20,images:5000},usage:{products:S().products.length,staff:1,images:S().products.reduce((n,p)=>n+(p.images||[]).length,0)}}),
     stores: () => [], isPlatform: () => false, billing: () => null, platformInfo: () => ({}), storeUrl: () => location.href.split("#")[0],
     me: () => ({ role: "owner", perms: [] }), can: () => true,
-    exportData: async () => ({ version: "0.45", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
+    exportData: async () => ({ version: "0.52", exportedAt: new Date().toISOString(), type: "store", store: clone(S()) }),
     planStatus: async () => ({tier:"pro",entitlements:{staff:true,reports:true,bundles:true,customerTags:true,customPages:true,advancedInventory:true},billing:null,requests:[]}),
     requestService: async () => uid("req"), cancelServiceRequest: async () => {},
     newOrders: async () => ({ checkedAt: new Date().toISOString(), rows: [] }) };
@@ -1359,10 +1359,24 @@
   const restocks={async request(productId,variantId,email,phone){S().restockRequests=S().restockRequests||[];const p=products.get(productId),id=uid('rr');S().restockRequests.unshift({id,productId,productName:p?p.name:'商品',variantId,email,phone,status:'waiting',createdAt:new Date().toISOString()});commit();return id;},adminList:async status=>clone((S().restockRequests||[]).filter(x=>!status||x.status===status)),async markNotified(ids){let n=0;(S().restockRequests||[]).forEach(x=>{if(ids.includes(x.id)&&x.status==='waiting'){x.status='notified';x.notifiedAt=new Date().toISOString();n++;}});commit();return n;}};
   const notifications={async list(){const items=[];(S().restockRequests||[]).filter(x=>x.status==='waiting').forEach(x=>items.push({kind:'restock',title:'新的補貨需求',text:x.productName+'・'+x.email,at:x.createdAt,link:'admin/restocks'}));return {readAt:'',items};},read:async()=>{}};
 
+  /* ---------- POS、門市、班別、全通路（離線示範） ---------- */
+  const ensurePos=()=>{S().locations=S().locations||[{id:'loc_main',code:'MAIN',name:'總店',address:'',phone:'',enabled:true,isDefault:true,createdAt:new Date().toISOString()}];S().posShifts=S().posShifts||[];return S().locations;};
+  const shiftView=x=>{const end=x.closedAt||new Date().toISOString(),os=S().orders.filter(o=>(o.channel||'online')==='pos'&&o.locationId===x.locationId&&o.cashier===x.cashier&&o.createdAt>=x.openedAt&&o.createdAt<end&&o.status!=='cancelled'),cashOrders=os.filter(o=>o.payment.methodId==='cash'),cash=cashOrders.reduce((a,o)=>a+o.total,0),cashRefunds=cashOrders.reduce((a,o)=>a+(o.refunds||[]).filter(r=>r.at>=x.openedAt&&r.at<end).reduce((n,r)=>n+r.amount,0),0),ev=x.events||[],cashIn=ev.filter(e=>e.kind==='in').reduce((a,e)=>a+e.amount,0),cashOut=ev.filter(e=>e.kind==='out').reduce((a,e)=>a+e.amount,0);return Object.assign(clone(x),{locationName:(ensurePos().find(l=>l.id===x.locationId)||{}).name||'',sales:os.reduce((a,o)=>a+o.total,0),cashSales:cash,cashRefunds,cashIn,cashOut,expectedCash:x.openingCash+cash-cashRefunds+cashIn-cashOut});};
+  const pos={
+    locations:()=>clone(ensurePos()),
+    async saveLocation(x){ensurePos();let l=x.id&&S().locations.find(y=>y.id===x.id);if(!String(x.name||'').trim())throw new Error('請填寫門市名稱');if(x.isDefault)S().locations.forEach(y=>y.isDefault=false);if(l)Object.assign(l,clone(x));else{l=Object.assign({id:uid('loc'),createdAt:new Date().toISOString()},clone(x));S().locations.push(l);}if(!S().locations.some(y=>y.isDefault))l.isDefault=true;commit();return l.id;},
+    async shifts(limit=100){ensurePos();return clone(S().posShifts.slice().sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).slice(0,limit).map(shiftView));},
+    async openShift(locationId,openingCash){ensurePos();if(S().posShifts.some(x=>x.locationId===locationId&&x.status==='open'))throw new Error('這間門市已經有進行中的班別');const x={id:uid('shift'),locationId,cashier:'示範模式',openingCash:Math.max(0,Math.round(+openingCash||0)),actualCash:null,status:'open',note:'',events:[],openedAt:new Date().toISOString(),closedAt:null};S().posShifts.unshift(x);commit();return shiftView(x);},
+    async closeShift(id,actualCash,note){const x=S().posShifts.find(y=>y.id===id&&y.status==='open');if(!x)throw new Error('找不到進行中的班別');x.actualCash=Math.max(0,Math.round(+actualCash||0));x.note=note||'';x.status='closed';x.closedAt=new Date().toISOString();commit();return shiftView(x);},
+    async cashEvent(id,kind,amount,reason){const x=S().posShifts.find(y=>y.id===id&&y.status==='open');if(!x)throw new Error('這個班別已經結束');if(!reason)throw new Error('請填寫收支原因');x.events.push({id:uid('cash'),kind,amount:Math.round(+amount||0),reason,createdAt:new Date().toISOString()});commit();},
+    async sale({locationId,shiftId,items,discount,payment,customerId,note}){const sh=S().posShifts.find(x=>x.id===shiftId&&x.status==='open'&&x.locationId===locationId);if(!sh)throw new Error('請先開班再結帳');if(!items.length)throw new Error('購物車是空的');let sub=0;const lines=items.map(it=>{const hit=findVariant(it.variantId);if(!hit||hit.v.stock<it.qty)throw new Error('商品庫存不足');sub+=hit.v.price*it.qty;return {productId:hit.p.id,variantId:hit.v.id,name:hit.p.name,optionText:Object.values(hit.v.options||{}).join(' / '),sku:hit.v.sku,price:hit.v.price,cost:hit.v.cost||0,qty:it.qty};});discount=Math.max(0,Math.round(+discount||0));if(discount>sub)throw new Error('折扣不能超過商品金額');S().counters.order+=1;const now=new Date().toISOString(),loc=ensurePos().find(x=>x.id===locationId),c=S().customers.find(x=>x.id===customerId),num='POS-'+ymdLocal(now).replace(/-/g,'')+'-'+String(S().counters.order).padStart(5,'0'),names={cash:'現金',card:'信用卡（外部刷卡機）',mobile:'行動支付',other:'其他'};for(const it of lines){const hit=findVariant(it.variantId);hit.v.stock-=it.qty;logMove(hit.p,hit.v,-it.qty,'sale',num,'POS・'+loc.name);}const o={id:uid('o'),number:num,customerId:c?c.id:null,contact:{name:c?c.name:'現場顧客',phone:c?c.phone:'',email:c?c.email:''},items:lines,subtotal:sub,shippingFee:0,discount,total:sub-discount,discounts:discount?[{kind:'pos',label:'POS 現場折扣',amount:discount}]:[],couponCode:'',shipping:{methodId:'pos',methodName:loc.name+' 現場取貨'},payment:{methodId:payment,methodName:names[payment]||'其他',status:'paid'},status:'completed',note:note||'',history:[{status:'completed',at:now,note:'POS 現場結帳'}],channel:'pos',locationId,cashier:sh.cashier,createdAt:now,refunds:[],refundTotal:0};S().orders.push(o);commit();return clone(o);},
+    async channelReport(from,to){ensurePos();const os=S().orders.filter(o=>['paid','shipped','completed'].includes(o.status)&&ymdLocal(o.createdAt)>=from&&ymdLocal(o.createdAt)<=to),sum=a=>a.reduce((n,o)=>n+o.total,0),units=a=>a.reduce((n,o)=>n+o.items.reduce((q,i)=>q+i.qty,0),0),pack=(channel)=>{const a=os.filter(o=>(o.channel||'online')===channel);return {channel,revenue:sum(a),orders:a.length,units:units(a)};},po=os.filter(o=>(o.channel||'online')==='pos');return {total:{revenue:sum(os),orders:os.length,units:units(os)},channels:[pack('online'),pack('pos')],locations:S().locations.map(l=>{const a=po.filter(o=>o.locationId===l.id);return {id:l.id,name:l.name,revenue:sum(a),orders:a.length,units:units(a)};}),payments:Object.values(po.reduce((m,o)=>{const k=o.payment.methodId;m[k]=m[k]||{id:k,name:o.payment.methodName,revenue:0,orders:0};m[k].revenue+=o.total;m[k].orders++;return m;},{})),hourly:[]};}
+  };
+
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, reviews, favorites, returns, stockCounts, restocks, notifications,
+    inventory, suppliers, purchases, reports, pos, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),

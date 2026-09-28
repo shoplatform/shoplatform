@@ -23,6 +23,7 @@
   /* ---------- 權限：每一頁需要哪個權限（店主全部都有） ---------- */
   const PERMS = [
     ["orders", "訂單", "查看訂單、確認收款、出貨、取消"],
+    ["pos", "POS 收銀", "現場結帳、開班交班與現金收支"],
     ["customers", "會員", "查看會員資料與消費紀錄"],
     ["products", "商品", "新增、編輯商品與分類"],
     ["inventory", "進銷存", "庫存、進貨單、供應商（會看到成本）"],
@@ -34,23 +35,23 @@
     products: "products", product: "products", categories: "products", reviews: "products",
     stock: "inventory", moves: "inventory", purchases: "inventory", purchase: "inventory", suppliers: "inventory", supplier: "inventory", counts: "inventory", count: "inventory", restocks:"inventory",
     coupons: "marketing", coupon: "marketing", promotions: "marketing", promotion: "marketing", bundles: "marketing", bundle: "marketing", tiers: "marketing",
-    theme: "settings", settings: "settings", pages: "settings", page: "settings", staff: "owner", plan: "owner", setup:"owner", returns: "orders" };
+    theme: "settings", settings: "settings", payments: "settings", locations: "settings", pos: "pos", shifts: "pos", channels: "reports", pages: "settings", page: "settings", staff: "owner", plan: "owner", setup:"owner", returns: "orders" };
   const can = p => DB.admin.can(p);
   const onboardingState=()=>{const s=DB.settings.get(),ps=DB.products.list(),on=s.onboarding||{},steps=[
     {id:'profile',title:'填寫商店基本資料',desc:'客服 Email、電話與商店介紹要完整，顧客才知道如何聯絡。',done:!!(s.name&&s.email&&s.phone),href:'admin/settings',action:'前往商店設定'},
-    {id:'delivery',title:'設定付款與配送方式',desc:'至少啟用一種付款方式與一種配送方式。',done:(s.paymentMethods||[]).some(x=>x.enabled)&&(s.shippingMethods||[]).some(x=>x.enabled),href:'admin/settings',action:'設定付款與配送'},
+    {id:'delivery',title:'設定付款與配送方式',desc:'至少啟用一種付款方式與一種配送方式。',done:(s.paymentMethods||[]).some(x=>x.enabled)&&(s.shippingMethods||[]).some(x=>x.enabled),href:'admin/payments',action:'設定付款與配送'},
     {id:'product',title:'上架第一件商品',desc:'建立商品、價格、規格及庫存，並將狀態設為上架。',done:ps.some(p=>DB.products.isLive(p)),href:'admin/product/new',action:'新增商品'},
     {id:'policy',title:'填寫退換貨政策',desc:'讓顧客結帳前清楚知道退換貨方式。',done:!!String(s.returnPolicy||'').trim(),href:'admin/settings',action:'填寫退換貨政策'},
     {id:'preview',title:'預覽並檢查商店前台',desc:'用顧客角度確認手機版、商品內容、運費與付款說明。',done:!!on.previewed,href:null,action:'開啟前台檢查'}];return {steps,done:steps.filter(x=>x.done).length,ready:steps.every(x=>x.done)};};
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
     const groups = [
-      ["", [["admin", "dash", "總覽", "", true],["admin/setup","setup","開店引導","",true],["admin/notifications","notifications","通知中心","",true]]],
-      ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")]]],
+      ["", [["admin", "dash", "總覽", "", true],["admin/pos","pos","POS 收銀台","",DB.features.pos&&can("pos")],["admin/setup","setup","開店引導","",true],["admin/notifications","notifications","通知中心","",true]]],
+      ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")], ["admin/channels", "channels", "全通路分析", "", DB.features.pos&&can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
       ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/restocks", "restocks", "補貨通知名單", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
       ["行銷", [["admin/coupons", "coupons", "優惠券", "", can("marketing")], ["admin/promotions", "promotions", "滿額活動", "", can("marketing")], ["admin/bundles", "bundles", "組合與加購", "", can("marketing")], ["admin/tiers", "tiers", "會員等級", "", DB.features.tiers && can("marketing")]]],
-      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")], ["admin/plan", "plan", "方案與續約", "", can("owner")]]],
+      ["商店", [["admin/theme", "theme", "外觀", "", can("settings")], ["admin/pages", "pages", "自訂頁面", "", can("settings")], ["admin/locations", "locations", "門市管理", "", DB.features.pos&&can("settings")], ["admin/shifts", "shifts", "班別與日結", "", DB.features.pos&&can("pos")], ["admin/payments", "payments", "收款與配送", "", can("settings")], ["admin/settings", "settings", "設定", "", can("settings")], ["admin/staff", "staff", "員工", "", DB.features.staff && can("owner")], ["admin/plan", "plan", "方案與續約", "", can("owner")]]],
     ];
     return groups.map(([title, items]) => {
       const shown = items.filter(x => x[4]);
@@ -81,7 +82,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.45 · 資料庫已連線" : "v0.45 · 離線示範版"}</div>
+            <div>${remote ? "v0.52 · 資料庫已連線" : "v0.52 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -737,7 +738,7 @@
       <thead><tr>${sel ? `<th class="ck"><input type="checkbox" id="o-all" aria-label="全選這一頁" ${list.every(o => sel.has(o.id)) ? "checked" : ""}></th>` : ""}<th>訂單編號</th><th>日期</th><th>顧客</th><th>取貨</th><th>付款</th><th>狀態</th><th class="r">金額</th></tr></thead>
       <tbody>${list.map(o => `<tr class="is-link ${sel && sel.has(o.id) ? "is-sel" : ""}" data-href="admin/order/${o.id}">
         ${sel ? `<td class="ck"><input type="checkbox" class="o-ck" value="${o.id}" ${sel.has(o.id) ? "checked" : ""} aria-label="選取 ${esc(o.number)}"></td>` : ""}
-        <td class="mono">${esc(o.number)}</td>
+        <td class="mono">${esc(o.number)} ${o.channel === "pos" ? `<span class="pill info">POS</span>` : `<span class="pill idle">線上</span>`}</td>
         <td class="num">${date(o.createdAt, true)}</td>
         <td>${esc(o.contact.name)}</td>
         <td>${esc(o.shipping.methodName)}</td>
@@ -1797,6 +1798,118 @@
     }
   }
 
+  /* ---------- POS 收銀、門市、班別、全通路 ---------- */
+  let posCart = [], posLocation = "", posCustomer = "";
+  const posRows = () => DB.products.list().filter(p => DB.products.isLive(p)).flatMap(p => p.variants.map(v => ({ productId:p.id, variantId:v.id, name:p.name, optionText:Object.values(v.options||{}).join(" / "), sku:v.sku||"", price:v.price, stock:v.stock, image:DB.products.cover(p), color:p.color })));
+  const posTotal = () => posCart.reduce((n,x)=>n+x.price*x.qty,0);
+  async function viewPOS() {
+    shell("pos", `<div class="page-head"><h1>POS 收銀台</h1><div class="actions"><a class="btn" href="#admin/shifts">班別與日結</a></div></div><div class="panel"><div class="empty">準備收銀台…</div></div>`);
+    const locations=DB.pos.locations().filter(x=>x.enabled); if(!locations.length){document.getElementById("main").innerHTML=`<div class="page-head"><h1>POS 收銀台</h1></div><div class="panel"><div class="empty">請先建立並啟用門市<div style="margin-top:12px"><a class="btn btn-primary" href="#admin/locations">前往門市管理</a></div></div></div>`;return;}
+    if(!locations.some(x=>x.id===posLocation))posLocation=(locations.find(x=>x.isDefault)||locations[0]).id;
+    let shifts=[];try{shifts=await DB.pos.shifts(100);}catch(err){toast(err.message,"error");}
+    const email=((DB.admin.user()||{}).email||"").toLowerCase(),shift=shifts.find(x=>x.status==='open'&&x.locationId===posLocation&&(!email||String(x.cashier||'').toLowerCase()===email))|| (DB.mode==='local'&&shifts.find(x=>x.status==='open'&&x.locationId===posLocation));
+    shell("pos", `<div class="page-head"><div><h1>POS 收銀台</h1><p class="muted" style="margin:5px 0 0">現場成交會立即扣除線上商城共用庫存。</p></div><div class="actions"><a class="btn" href="#admin/shifts">班別與日結</a></div></div>
+      <div class="pos-toolbar"><div class="field"><label for="pos-loc">銷售門市</label><select id="pos-loc">${locations.map(l=>`<option value="${l.id}" ${l.id===posLocation?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div><div class="field pos-search"><label for="pos-q">搜尋商品、SKU</label><input id="pos-q" type="search" placeholder="輸入商品名稱、規格或條碼"></div><span class="pill ${shift?'ok':'warn'}">${shift?`已開班・${esc(shift.cashier)}`:'尚未開班'}</span></div>
+      ${shift?'':`<div class="notice"><b>開始收銀前要先開班</b><div class="small">輸入收銀櫃裡原本的備用金，日結時系統才能算出應有現金。</div><div class="actions" style="margin-top:10px"><input type="number" id="pos-opening" min="0" value="0" aria-label="開班備用金"><button class="btn btn-primary" id="pos-open">開班</button></div></div>`}
+      <div class="pos-layout">
+        <section class="panel"><div class="panel-head"><h2>商品</h2><span class="small muted" id="pos-count"></span></div><div class="pos-products" id="pos-products"></div></section>
+        <aside class="panel pos-cart"><div class="panel-head"><h2>本次結帳</h2><button class="btn btn-sm" id="pos-clear" type="button">清空</button></div><div id="pos-cart"></div>
+          <div class="panel-body"><div class="field"><label for="pos-customer-q">會員（選填）</label><div class="actions"><input id="pos-customer-q" placeholder="姓名／手機／Email"><button class="btn btn-sm" id="pos-customer-find">搜尋</button></div><select id="pos-customer" style="display:none"></select><span class="hint" id="pos-customer-hint">不選就是現場散客。</span></div>
+          <div class="grid-form"><div class="field"><label for="pos-discount">整單折扣</label><input type="number" id="pos-discount" min="0" value="0"></div><div class="field"><label for="pos-payment">付款方式</label><select id="pos-payment"><option value="cash">現金</option><option value="card">信用卡（外部刷卡機）</option><option value="mobile">行動支付</option><option value="other">其他</option></select></div></div>
+          <div class="field"><label for="pos-note">備註（選填）</label><input id="pos-note" maxlength="200"></div><div class="pos-total"><span>應收金額</span><strong id="pos-total">${money(posTotal())}</strong></div><button class="btn btn-primary" id="pos-checkout" style="width:100%;padding:13px" ${shift?'':'disabled'}>完成結帳</button></div></aside>
+      </div>`);
+    const rows=posRows(),prod=document.getElementById('pos-products'),cart=document.getElementById('pos-cart');
+    const drawProducts=()=>{const q=document.getElementById('pos-q').value.trim().toLowerCase(),list=rows.filter(x=>!q||[x.name,x.optionText,x.sku].some(v=>String(v).toLowerCase().includes(q)));document.getElementById('pos-count').textContent=`${list.length} 個規格`;prod.innerHTML=list.length?list.map(x=>`<button class="pos-product" type="button" data-add="${x.variantId}" ${x.stock<=0?'disabled':''}>${x.image?`<img src="${esc(x.image)}" alt="">`:`<i style="background:${esc(x.color)}">${esc(x.name.slice(0,1))}</i>`}<span><b>${esc(x.name)}</b><small>${esc(x.optionText||'單一規格')}・庫存 ${x.stock}</small><strong>${money(x.price)}</strong></span></button>`).join(''):`<div class="empty">找不到商品</div>`;prod.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>{const r=rows.find(x=>x.variantId===b.dataset.add),hit=posCart.find(x=>x.variantId===r.variantId);if(hit){if(hit.qty>=r.stock)return toast('庫存不足','error');hit.qty++;}else posCart.push({...r,qty:1});drawCart();});};
+    const drawCart=()=>{cart.innerHTML=posCart.length?`<div class="table-wrap"><table class="tbl"><tbody>${posCart.map((x,i)=>`<tr><td>${esc(x.name)}<div class="small muted">${esc(x.optionText||'單一規格')}</div></td><td><input class="pos-qty" data-i="${i}" type="number" min="1" max="${x.stock}" value="${x.qty}" aria-label="數量"></td><td class="r num">${money(x.price*x.qty)}</td><td><button class="icon-btn pos-del" data-i="${i}" aria-label="移除">×</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">點左邊商品加入結帳</div>`;cart.querySelectorAll('.pos-qty').forEach(e=>e.onchange=()=>{const x=posCart[+e.dataset.i];x.qty=Math.max(1,Math.min(x.stock,Math.floor(+e.value||1)));drawCart();});cart.querySelectorAll('.pos-del').forEach(e=>e.onclick=()=>{posCart.splice(+e.dataset.i,1);drawCart();});const d=+document.getElementById('pos-discount').value||0;document.getElementById('pos-total').textContent=money(Math.max(0,posTotal()-d));};
+    drawProducts();drawCart();document.getElementById('pos-q').oninput=drawProducts;document.getElementById('pos-discount').oninput=drawCart;document.getElementById('pos-clear').onclick=()=>{posCart=[];drawCart();};document.getElementById('pos-loc').onchange=e=>{posLocation=e.target.value;viewPOS();};
+    const open=document.getElementById('pos-open');if(open)open.onclick=async()=>{try{await DB.pos.openShift(posLocation,+document.getElementById('pos-opening').value||0);toast('開班完成，可以開始結帳');viewPOS();}catch(err){toast(err.message,'error');}};
+    document.getElementById('pos-customer-find').onclick=async()=>{const q=document.getElementById('pos-customer-q').value.trim();if(!q)return;try{const r=await DB.customers.query({q},{limit:30}),sel=document.getElementById('pos-customer');sel.innerHTML=`<option value="">現場散客</option>`+(r.rows||[]).map(c=>`<option value="${c.id}">${esc(c.name)}・${esc(c.phone)}</option>`).join('');sel.style.display='block';sel.onchange=()=>{posCustomer=sel.value;};document.getElementById('pos-customer-hint').textContent=r.rows.length?`找到 ${r.rows.length} 位會員`:'找不到會員，這筆會以現場散客結帳';}catch(err){toast(err.message,'error');}};
+    document.getElementById('pos-checkout').onclick=async e=>{if(!posCart.length)return toast('請先加入商品','error');const total=posTotal()-(+document.getElementById('pos-discount').value||0);if(total<0)return toast('折扣不能超過商品金額','error');if(!await confirmBox({title:`確認收款 ${money(total)}`,body:'完成後會建立 POS 訂單並立即扣除共用庫存。',ok:'完成結帳'}))return;e.target.disabled=true;try{const o=await DB.pos.sale({locationId:posLocation,shiftId:shift.id,items:posCart,discount:+document.getElementById('pos-discount').value||0,payment:document.getElementById('pos-payment').value,customerId:posCustomer,note:document.getElementById('pos-note').value.trim()});posCart=[];posCustomer='';toast(`結帳完成・${o.number}`);viewPOS();}catch(err){toast(err.message,'error');e.target.disabled=false;}};
+  }
+
+  function viewLocations(){const L=DB.pos.locations();shell('locations',`<div class="page-head"><div><h1>門市管理</h1><p class="muted" style="margin:5px 0 0">門市用於 POS 銷售歸屬與業績分析；目前各通路共用同一個可售庫存。</p></div><button class="btn btn-primary" id="loc-new">新增門市</button></div><section class="panel"><div class="table-wrap"><table class="tbl"><thead><tr><th>門市</th><th>代碼</th><th>地址／電話</th><th>狀態</th></tr></thead><tbody>${L.map(l=>`<tr class="is-link" data-loc="${l.id}"><td><b>${esc(l.name)}</b>${l.isDefault?' <span class="pill info">預設</span>':''}</td><td class="mono">${esc(l.code)}</td><td>${esc(l.address||'—')}<div class="small muted">${esc(l.phone||'')}</div></td><td><span class="pill ${l.enabled?'ok':'idle'}">${l.enabled?'啟用':'停用'}</span></td></tr>`).join('')}</tbody></table></div></section><div id="loc-form"></div>`);const edit=l=>{document.getElementById('loc-form').innerHTML=`<section class="panel is-hl"><div class="panel-head"><h2>${l.id?'編輯門市':'新增門市'}</h2></div><div class="panel-body grid-form"><div class="field"><label>門市名稱</label><input id="loc-name" value="${esc(l.name||'')}"></div><div class="field"><label>門市代碼</label><input id="loc-code" value="${esc(l.code||'')}"></div><div class="field"><label>地址</label><input id="loc-address" value="${esc(l.address||'')}"></div><div class="field"><label>電話</label><input id="loc-phone" value="${esc(l.phone||'')}"></div><label class="check"><input id="loc-enabled" type="checkbox" ${l.enabled!==false?'checked':''}>啟用 POS</label><label class="check"><input id="loc-default" type="checkbox" ${l.isDefault?'checked':''}>設為預設門市</label><div class="actions"><button class="btn btn-primary" id="loc-save">儲存門市</button></div></div></section>`;document.getElementById('loc-save').onclick=async()=>{try{await DB.pos.saveLocation({id:l.id||null,name:document.getElementById('loc-name').value.trim(),code:document.getElementById('loc-code').value.trim().toUpperCase(),address:document.getElementById('loc-address').value.trim(),phone:document.getElementById('loc-phone').value.trim(),enabled:document.getElementById('loc-enabled').checked,isDefault:document.getElementById('loc-default').checked});toast('門市已儲存');viewLocations();}catch(err){toast(err.message,'error');}};};document.getElementById('loc-new').onclick=()=>edit({enabled:true});document.querySelectorAll('[data-loc]').forEach(r=>r.onclick=()=>edit(L.find(l=>l.id===r.dataset.loc)));}
+
+  async function viewShifts(){shell('shifts',`<div class="page-head"><h1>班別與日結</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);let L;try{L=await DB.pos.shifts(200);}catch(err){return toast(err.message,'error');}shell('shifts',`<div class="page-head"><h1>班別與日結</h1><a class="btn btn-primary" href="#admin/pos">前往 POS</a></div>${L.filter(x=>x.status==='open').map(x=>`<section class="panel is-hl"><div class="panel-head"><h2>${esc(x.locationName)}・進行中</h2><span class="pill ok">${esc(x.cashier)}</span></div><div class="panel-body"><div class="kpis"><div class="kpi"><span>銷售額</span><strong>${money(x.sales)}</strong></div><div class="kpi"><span>現金銷售</span><strong>${money(x.cashSales)}</strong><small>${x.cashRefunds?`現金退款 ${money(x.cashRefunds)}`:'尚無現金退款'}</small></div><div class="kpi"><span>應有現金</span><strong>${money(x.expectedCash)}</strong><small>備用金＋現金銷售－退款＋收支</small></div></div><div class="actions"><button class="btn" data-cash="${x.id}">現金收支</button><button class="btn btn-primary" data-close="${x.id}">交班／日結</button></div></div></section>`).join('')}<section class="panel"><div class="panel-head"><h2>最近班別</h2></div><div class="table-wrap"><table class="tbl"><thead><tr><th>開班時間</th><th>門市</th><th>收銀員</th><th class="r">銷售</th><th class="r">應有現金</th><th class="r">實際現金</th><th class="r">差額</th><th>狀態</th></tr></thead><tbody>${L.map(x=>`<tr><td>${date(x.openedAt,true)}</td><td>${esc(x.locationName)}</td><td>${esc(x.cashier)}</td><td class="r num">${money(x.sales)}</td><td class="r num">${money(x.expectedCash)}</td><td class="r num">${x.actualCash==null?'—':money(x.actualCash)}</td><td class="r num">${x.actualCash==null?'—':money(x.actualCash-x.expectedCash)}</td><td><span class="pill ${x.status==='open'?'ok':'idle'}">${x.status==='open'?'進行中':'已日結'}</span></td></tr>`).join('')}</tbody></table></div></section>`);document.querySelectorAll('[data-cash]').forEach(b=>b.onclick=async()=>{const kind=prompt('輸入 in 代表放入現金，out 代表取出現金','out');if(!['in','out'].includes(kind))return;const amount=+prompt('金額','0'),reason=prompt('原因','臨時支出');try{await DB.pos.cashEvent(b.dataset.cash,kind,amount,reason);toast('現金收支已記錄');viewShifts();}catch(err){toast(err.message,'error');}});document.querySelectorAll('[data-close]').forEach(b=>b.onclick=async()=>{const x=L.find(y=>y.id===b.dataset.close),actual=prompt(`系統應有 ${money(x.expectedCash)}，請輸入實際點到的現金`,String(x.expectedCash));if(actual===null)return;const note=prompt('交班備註（選填）','')||'';try{const r=await DB.pos.closeShift(x.id,+actual,note);toast(`日結完成・差額 ${money(r.actualCash-r.expectedCash)}`);viewShifts();}catch(err){toast(err.message,'error');}});}
+
+  async function viewChannels(){const [from,to]=rangeDates(rRange);shell('channels',`<div class="page-head"><h1>全通路分析</h1></div><div class="rp-bar"><div class="seg">${RANGES.filter(x=>x[0]!=='custom').map(([k,t])=>`<button data-cr="${k}" class="${rRange===k?'is-on':''}">${t}</button>`).join('')}</div><span class="small muted">${slash(from)} ～ ${slash(to)}</span></div><div id="ch-body"><div class="panel"><div class="empty">計算中…</div></div></div>`);document.querySelectorAll('[data-cr]').forEach(b=>b.onclick=()=>{rRange=b.dataset.cr;viewChannels();});let R;try{R=await DB.pos.channelReport(from,to);}catch(err){document.getElementById('ch-body').innerHTML=`<div class="panel"><div class="empty">${esc(err.message)}</div></div>`;return;}const online=R.channels.find(x=>x.channel==='online')||{revenue:0,orders:0,units:0},physical=R.channels.find(x=>x.channel==='pos')||{revenue:0,orders:0,units:0};document.getElementById('ch-body').innerHTML=`<div class="kpis"><div class="kpi"><span>全通路營業額</span><strong>${money(R.total.revenue)}</strong><small>${R.total.orders} 筆・${R.total.units} 件</small></div><div class="kpi"><span>線上商城</span><strong>${money(online.revenue)}</strong><small>${online.orders} 筆・占 ${pct(online.revenue,R.total.revenue)}</small></div><div class="kpi"><span>實體門市 POS</span><strong>${money(physical.revenue)}</strong><small>${physical.orders} 筆・占 ${pct(physical.revenue,R.total.revenue)}</small></div></div><div class="grid-2"><section class="panel"><div class="panel-head"><h2>各門市業績</h2></div><div class="table-wrap"><table class="tbl"><thead><tr><th>門市</th><th class="r">訂單</th><th class="r">件數</th><th class="r">營業額</th></tr></thead><tbody>${R.locations.map(x=>`<tr><td>${esc(x.name)}</td><td class="r num">${x.orders}</td><td class="r num">${x.units}</td><td class="r num">${money(x.revenue)}</td></tr>`).join('')}</tbody></table></div></section><section class="panel"><div class="panel-head"><h2>POS 付款方式</h2></div><div class="table-wrap"><table class="tbl"><tbody>${R.payments.map(x=>`<tr><td>${esc(x.name)}</td><td class="r num">${x.orders} 筆</td><td class="r num">${money(x.revenue)}</td></tr>`).join('')}</tbody></table></div></section></div>`;}
+
+  /* ---------- 收款與配送（未串接第三方服務前的人工營運設定） ---------- */
+  function viewPayments() {
+    const st = DB.settings.get();
+    const pay = st.paymentMethods || [], ship = st.shippingMethods || [];
+    const detail = st.paymentDetails || {};
+    const transfer = pay.find(x => x.id === "transfer") || {};
+    shell("payments", `
+      <div class="page-head"><div><h1>收款與配送</h1><p class="muted" style="margin:6px 0 0">目前可用人工收款與人工出貨；串接服務上線後才會自動刷卡、對帳及產生物流單。</p></div><button class="btn btn-primary" id="pd-save">儲存設定</button></div>
+      <div class="notice"><b>安全提醒：</b>銀行帳號會提供給選擇轉帳的顧客。請只填商業收款資料，不要填網銀密碼、信用卡資料、API Key 或任何驗證碼。</div>
+      <section class="panel">
+        <div class="panel-head"><h2>銀行轉帳</h2><span class="pill info">人工對帳</span></div>
+        <div class="panel-body">
+          <label class="check"><input type="checkbox" id="pd-transfer" ${transfer.enabled ? "checked" : ""}><span><b>接受銀行轉帳</b><span class="small muted">顧客下單後依照以下資料匯款，由商家在訂單頁人工確認收款。</span></span></label>
+          <div class="grid-form">
+            <div class="field"><label for="pd-bank-name">銀行名稱</label><input id="pd-bank-name" value="${esc(detail.bankName || "")}" placeholder="例如：玉山銀行"></div>
+            <div class="field"><label for="pd-bank-code">銀行代碼</label><input id="pd-bank-code" value="${esc(detail.bankCode || "")}" maxlength="10" placeholder="例如：808"></div>
+            <div class="field"><label for="pd-branch">分行（選填）</label><input id="pd-branch" value="${esc(detail.branch || "")}" placeholder="例如：台中分行"></div>
+            <div class="field"><label for="pd-account-name">戶名</label><input id="pd-account-name" value="${esc(detail.accountName || "")}" placeholder="收款帳戶戶名"></div>
+            <div class="field"><label for="pd-account-number">帳號</label><input id="pd-account-number" value="${esc(detail.accountNumber || "")}" inputmode="numeric" autocomplete="off" placeholder="請輸入收款帳號"></div>
+            <div class="field"><label for="pd-days">付款期限（天）</label><input type="number" id="pd-days" min="0" max="30" value="${+st.autoCancelDays || 3}"><span class="hint">填 0 代表不自動取消。</span></div>
+          </div>
+          <div class="field"><label for="pd-transfer-note">顧客付款說明</label><textarea id="pd-transfer-note" rows="4" maxlength="1000">${esc(detail.transferNote || transfer.instruction || "")}</textarea><span class="hint">銀行資料會自動附在這段說明後面。</span></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>其他付款方式</h2><span class="pill warn">自動金流尚未串接</span></div>
+        <div class="panel-body" style="gap:0">
+          ${pay.filter(m => m.id !== "transfer").map((m, i) => `<div class="method-row">
+            <input type="checkbox" class="pd-pay-on" id="pd-pay-${m.id}" data-id="${esc(m.id)}" ${m.enabled ? "checked" : ""} ${m.id === "card" ? "disabled" : ""}>
+            <label for="pd-pay-${m.id}">${esc(m.name)}<div class="small muted">${esc(m.instruction || "")}</div></label>
+            <span class="pill ${m.id === "card" ? "idle" : "info"}">${m.id === "card" ? "待串接" : "人工確認"}</span>
+          </div>`).join("")}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>配送方式與運費</h2><span class="pill info">人工出貨</span></div>
+        <div class="panel-body">
+          <div class="grid-form">
+            <div class="field"><label for="pd-free">全店免運門檻（NT$）</label><input type="number" id="pd-free" min="0" step="1" value="${+st.freeShippingThreshold || 0}"><span class="hint">填 0 代表不設免運。</span></div>
+            <div class="field"><label for="pd-ship-note">顧客配送說明</label><input id="pd-ship-note" value="${esc(st.shippingNote || "")}" maxlength="500" placeholder="例如：付款確認後 2～3 個工作天寄出"></div>
+          </div>
+          ${ship.map((m, i) => `<div class="method-row">
+            <input type="checkbox" class="pd-ship-on" id="pd-ship-${m.id}" data-i="${i}" ${m.enabled ? "checked" : ""}>
+            <label for="pd-ship-${m.id}">${esc(m.name)}<div class="small muted">目前須由商家人工建立寄件與回填物流資訊。</div></label>
+            <div class="field" style="margin:0;max-width:150px"><label class="sr-only" for="pd-fee-${m.id}">運費</label><input type="number" class="pd-ship-fee" id="pd-fee-${m.id}" data-i="${i}" min="0" step="1" value="${+m.fee || 0}" aria-label="${esc(m.name)}運費"></div>
+          </div>`).join("")}
+        </div>
+      </section>
+      <section class="panel"><div class="panel-body"><b>尚未自動化的部分</b><p class="muted" style="margin:8px 0 0">信用卡刷卡、超商門市選擇、電子地圖、物流單列印、運送狀態同步與自動對帳，都要等第三方金流／物流正式申請與串接後才會啟用。</p></div></section>`);
+
+    document.getElementById("pd-save").addEventListener("click", async () => {
+      const cur = DB.settings.get(), pms = cur.paymentMethods || [], sms = cur.shippingMethods || [];
+      const t = pms.find(x => x.id === "transfer");
+      if (t) t.enabled = document.getElementById("pd-transfer").checked;
+      root().querySelectorAll(".pd-pay-on").forEach(el => { const m = pms.find(x => x.id === el.dataset.id); if (m) m.enabled = el.checked; });
+      root().querySelectorAll(".pd-ship-on").forEach(el => { sms[+el.dataset.i].enabled = el.checked; });
+      root().querySelectorAll(".pd-ship-fee").forEach(el => { sms[+el.dataset.i].fee = Math.max(0, Math.floor(+el.value || 0)); });
+      if (!pms.some(m => m.enabled)) return toast("至少要開一種付款方式", "error");
+      if (!sms.some(m => m.enabled)) return toast("至少要開一種配送方式", "error");
+      cur.paymentDetails = {
+        bankName: document.getElementById("pd-bank-name").value.trim(), bankCode: document.getElementById("pd-bank-code").value.trim(),
+        branch: document.getElementById("pd-branch").value.trim(), accountName: document.getElementById("pd-account-name").value.trim(),
+        accountNumber: document.getElementById("pd-account-number").value.trim(), transferNote: document.getElementById("pd-transfer-note").value.trim()
+      };
+      cur.autoCancelDays = Math.min(30, Math.max(0, Math.floor(+document.getElementById("pd-days").value || 0)));
+      cur.freeShippingThreshold = Math.max(0, Math.floor(+document.getElementById("pd-free").value || 0));
+      cur.shippingNote = document.getElementById("pd-ship-note").value.trim();
+      if (t) {
+        const note = cur.paymentDetails.transferNote;
+        const d = cur.paymentDetails, account = [d.bankName, d.bankCode && `代碼 ${d.bankCode}`, d.branch, d.accountName && `戶名 ${d.accountName}`, d.accountNumber && `帳號 ${d.accountNumber}`].filter(Boolean).join("／");
+        t.instruction = [note, account].filter(Boolean).join("\n");
+        if (t.enabled && !d.accountNumber) return toast("啟用銀行轉帳時，請填寫收款帳號", "error");
+      }
+      try { await DB.settings.update(cur); toast("收款與配送設定已儲存"); viewPayments(); } catch (err) { toast(err.message, "error"); }
+    });
+  }
+
   /* ---------- 設定 ---------- */
   function viewSettings() {
     const st = DB.settings.get();
@@ -2683,6 +2796,10 @@
     startOrderWatch();
     switch (page) {
       case undefined: return viewDashboard();
+      case "pos": return viewPOS();
+      case "locations": return viewLocations();
+      case "shifts": return viewShifts();
+      case "channels": return viewChannels();
       case "setup": return viewSetup();
       case "products": return arg === "sort" ? viewProductSort() : viewProducts();
       case "product": return viewProductEdit(arg);
@@ -2693,6 +2810,7 @@
       case "notifications": return viewNotifications();
       case "customers": return viewCustomers();
       case "customer": return viewCustomer(arg);
+      case "payments": return viewPayments();
       case "settings": return viewSettings();
       case "coupons": return viewCoupons();
       case "coupon": return viewCouponEdit(arg);

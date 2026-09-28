@@ -508,6 +508,7 @@
             <section class="s-box">
               <h2>取貨方式</h2>
               <div class="s-radio">${ships.map(m => `<label><input type="radio" name="co-ship" id="co-ship-${m.id}" value="${m.id}" ${form.ship === m.id ? "checked" : ""}> ${esc(m.name)}<span class="fee">${money(m.fee)}</span></label>`).join("")}</div>
+              ${st.shippingNote ? `<p class="small" style="margin:0;color:var(--s-muted)">${esc(st.shippingNote)}</p>` : ""}
               <div id="co-ship-extra"></div>
             </section>
             <section class="s-box">
@@ -604,7 +605,7 @@
           <p class="muted" style="margin:0">訂單編號</p>
           <div class="no">${esc(o.number)}</div>
           <p style="margin:0">總計 <b class="mono">${money(o.total)}</b> · ${esc(o.shipping.methodName)}</p>
-          ${pay ? `<p style="margin:0;max-width:40ch;color:var(--s-muted)">${esc(pay.instruction)}</p>` : ""}
+          ${pay ? `<p style="margin:0;max-width:40ch;color:var(--s-muted);white-space:pre-wrap">${esc(pay.instruction)}</p>` : ""}
           <div class="actions" style="justify-content:center"><a class="btn btn-primary" href="#shop/order/${esc(o.number)}">查看訂單</a><a class="btn" href="#shop">繼續逛</a></div>
           ${canJoin ? `<div class="s-box s-join">
             <b>下次想更快查訂單？</b>
