@@ -1,5 +1,5 @@
-/* v0.52 ====================================================
- * db.js — 資料層（Supabase 資料庫版，v0.52）
+/* v0.53 ====================================================
+ * db.js — 資料層（Supabase 資料庫版，v0.53）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -245,7 +245,7 @@
   let memberLoaded = false;
   async function ready(which) {
     await boot();
-    side = which === "admin" ? "admin" : which === "platform" ? "platform" : which === "home" ? "home" : "shop";
+    side = which === "admin" || which === "pos" ? "admin" : which === "platform" ? "platform" : which === "home" ? "home" : "shop";
     if (side === "home") { await loadHome(); return { state: "ok" }; }
     if (side === "shop") {
       shopClient();
@@ -1030,7 +1030,7 @@
     cashEvent: (shiftId, kind, amount, reason) => rpc("admin_pos_cash_event", { p_store: adminStore.id, p_shift: shiftId, p_kind: kind, p_amount: Math.round(+amount || 0), p_reason: reason || "" }),
     async sale({ locationId, shiftId, items, discount, payment, customerId, note }) {
       const o = await rpc("admin_pos_sale", { p_store: adminStore.id, p_location: locationId, p_shift: shiftId,
-        p_items: items.map(x => ({ variantId: x.variantId, qty: x.qty })), p_discount: Math.round(+discount || 0), p_payment: payment,
+        p_items: items.map(x => x.custom ? ({ custom: true, name: x.name, price: Math.round(+x.price || 0), qty: x.qty }) : ({ variantId: x.variantId, qty: x.qty })), p_discount: Math.round(+discount || 0), p_payment: payment,
         p_customer: customerId || null, p_note: note || "" });
       await afterWrite(); return o;
     },

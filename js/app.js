@@ -7,7 +7,7 @@
   const app = () => document.getElementById("app");
   let seq = 0;
 
-  const SIDES = ["shop", "admin", "platform", "home"];
+  const SIDES = ["shop", "admin", "pos", "platform", "home"];
   Router.handlers.push(async parts => {
     const my = ++seq;
     let side = SIDES.includes(parts[0]) ? parts[0] : "admin";
@@ -25,16 +25,16 @@
       clearTimeout(slow);
       if (my !== seq) return; // 使用者已經切到別頁
       const platformName = (DB.home && DB.home.info().platformName) || "開店平台";
-      document.title = side === "shop" ? `${DB.settings.get().name || "商店"}` : side === "admin" ? `商家後台｜${DB.settings.get().name || platformName}`
+      document.title = side === "shop" ? `${DB.settings.get().name || "商店"}` : side === "admin" ? `商家後台｜${DB.settings.get().name || platformName}` : side === "pos" ? `POS 收銀台｜${DB.settings.get().name || platformName}`
         : side === "platform" ? `平台總控台｜${platformName}` : platformName;
       const note = DB.takeNotice && DB.takeNotice();
       // 員工邀請連結 #admin/join/<token>；註冊完回來時也接著處理還沒完成的邀請
       const pending = side === "admin" && window.AdminPendingInvite ? window.AdminPendingInvite.get() : "";
       if (side === "admin" && parts[1] === "join" && parts[2]) { await window.AdminJoin(parts[2], st); }
       else if (pending && st.state !== "login") { Router.go("admin/join/" + pending); }
-      else if ((side === "admin" || side === "platform") && st.state !== "ok") { window.AdminGate(Object.assign({ side }, st), parts); }
+      else if ((side === "admin" || side === "pos" || side === "platform") && st.state !== "ok") { window.AdminGate(Object.assign({ side }, st), parts); }
       else {
-        const App = { shop: window.ShopApp, admin: window.AdminApp, platform: window.PlatformApp, home: window.HomeApp }[side];
+        const App = { shop: window.ShopApp, admin: window.AdminApp, pos: window.PosApp, platform: window.PlatformApp, home: window.HomeApp }[side];
         await App(parts); window.scrollTo(0, 0);
       }
       // Email 連結回來的提示（例如「信箱已確認」）

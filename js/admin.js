@@ -46,7 +46,7 @@
   const permName = k => (PERMS.find(x => x[0] === k) || [k, k])[1];
   function navHtml(link, c, poOpen) {
     const groups = [
-      ["", [["admin", "dash", "總覽", "", true],["admin/pos","pos","POS 收銀台","",DB.features.pos&&can("pos")],["admin/setup","setup","開店引導","",true],["admin/notifications","notifications","通知中心","",true]]],
+      ["", [["admin", "dash", "總覽", "", true],["admin/setup","setup","開店引導","",true],["admin/notifications","notifications","通知中心","",true]]],
       ["銷售", [["admin/orders", "orders", "訂單", c.paid || "", can("orders")], ["admin/returns", "returns", "售後處理", "", can("orders")], ["admin/customers", "customers", "會員", "", can("customers")], ["admin/reports", "reports", "報表", "", can("reports")], ["admin/channels", "channels", "全通路分析", "", DB.features.pos&&can("reports")]]],
       ["商品", [["admin/products", "products", "商品", "", can("products")], ["admin/categories", "categories", "分類", "", can("products")], ["admin/reviews", "reviews", "評價", DB.reviews.pending() || "", can("products")]]],
       ["進銷存", DB.features.inventory ? [["admin/stock", "stock", "庫存", "", can("inventory")], ["admin/restocks", "restocks", "補貨通知名單", "", can("inventory")], ["admin/counts", "counts", "庫存盤點", "", can("inventory")], ["admin/purchases", "purchases", "進貨單", poOpen || "", can("inventory")], ["admin/suppliers", "suppliers", "供應商", "", can("inventory")]] : []],
@@ -79,10 +79,11 @@
           <div class="side-brand"><strong>${esc(st.name)}</strong><span>商家後台</span></div>
           <nav aria-label="後台選單">${navHtml(link, c, poOpen)}</nav>
           <div class="side-foot">
+            ${DB.features.pos && can("pos") ? `<a class="side-link" href="#pos">開啟 POS 收銀台</a>` : ""}
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.52 · 資料庫已連線" : "v0.52 · 離線示範版"}</div>
+            <div>${remote ? "v0.53 · 資料庫已連線" : "v0.53 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -2796,7 +2797,7 @@
     startOrderWatch();
     switch (page) {
       case undefined: return viewDashboard();
-      case "pos": return viewPOS();
+      case "pos": return Router.go("pos");
       case "locations": return viewLocations();
       case "shifts": return viewShifts();
       case "channels": return viewChannels();
