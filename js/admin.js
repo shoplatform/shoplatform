@@ -55,7 +55,10 @@
     ];
     return groups.map(([title, items]) => {
       const shown = items.filter(x => x[4]);
-      return shown.length ? (title ? `<div class="sep">${title}</div>` : "") + shown.map(x => link(x[0], x[1], x[2], x[3])).join("") : "";
+      if (!shown.length) return "";
+      if (!title) return shown.map(x => link(x[0], x[1], x[2], x[3])).join("");
+      const activeGroup=shown.some(x=>location.hash.replace(/^#/,"").split("/")[1]===x[1]||location.hash.replace(/^#/,"")===x[0]);
+      return `<details class="side-group" ${activeGroup?'open':''}><summary>${title}<span>⌄</span></summary>${shown.map(x => link(x[0], x[1], x[2], x[3])).join("")}</details>`;
     }).join("");
   }
   function noPerm(perm) {
@@ -83,7 +86,7 @@
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.55 · 資料庫已連線" : "v0.55 · 離線示範版"}</div>
+            <div>${remote ? "v0.58 · 資料庫已連線" : "v0.58 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -685,6 +688,12 @@
       ${setupNotice}
       ${planNotice}
       ${DB.mode === "remote" ? storeUrlBox() : ""}
+      <section class="panel task-panel"><div class="panel-head"><h2>今天待辦</h2><span class="small muted">先處理最影響出貨與銷售的項目</span></div><div class="task-grid">
+        <a href="#admin/orders/paid"><b>${s.toShip}</b><span>筆待出貨</span><small>查看訂單 →</small></a>
+        <a href="#admin/orders/pending_payment"><b>${s.toPay}</b><span>筆待付款確認</span><small>前往核對 →</small></a>
+        <a href="#admin/stock"><b>${low.length}</b><span>項低庫存</span><small>安排補貨 →</small></a>
+        ${DB.features.pos?`<a href="#admin/shifts"><b>POS</b><span>班別與日結</span><small>查看差額 →</small></a>`:''}
+      </div></section>
       <div class="kpis">
         <div class="kpi"><span>今日營收</span><strong>${money(s.todayRevenue)}</strong><small>${s.todayOrders} 筆訂單</small></div>
         <div class="kpi"><span>本月營收</span><strong>${money(s.monthRevenue)}</strong><small>平均客單 ${money(s.avgOrder)}</small></div>

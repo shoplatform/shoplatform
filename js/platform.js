@@ -115,13 +115,14 @@
     const cta = h.signupOpen
       ? `<a class="btn btn-primary btn-lg" href="#admin/signup">${h.trialDays ? `免費試用 ${h.trialDays} 天` : "免費開店"}</a>`
       : `<span class="btn btn-lg" aria-disabled="true">目前暫停開放新商店</span>`;
+    const basicFee=+h.annualFee||6000,proFee=+h.proAnnualFee||12000;
     const feats = [
-      ["商品與多規格", "顏色 × 尺寸自動組合，每個規格各自設價格、庫存；可上傳多張商品照片。"],
-      ["訂單一條龍", "待付款 → 待出貨 → 已出貨 → 完成，填物流單號、匯出 Excel。"],
-      ["會員與等級", "顧客用 Email 註冊，累積消費自動升級，銀卡、金卡各有折扣與免運。"],
-      ["優惠券與滿額", "折金額、打折、免運；滿額自動折，購物車會提示「再買多少」。"],
-      ["進銷存", "庫存異動紀錄、盤點、進貨單分批入庫、供應商、平均成本。"],
-      ["不怕超賣", "金額由伺服器計算，下單時鎖庫存；很多人同時搶最後一件也不會賣超過。"],
+      ["網路商城", "商品、多規格、購物車、會員、優惠券與訂單流程一次準備好。"],
+      ["實體 POS", "現場快速結帳、開班交班與現金對帳，不需要在後台選單間切換。"],
+      ["共用庫存", "網路或門市售出都扣同一份庫存，降低重複登記與超賣。"],
+      ["進貨與盤點", "供應商、進貨單、分批入庫、庫存異動與盤點都有紀錄。"],
+      ["會員與優惠", "會員等級、標籤、折扣券、滿額活動與組合優惠集中管理。"],
+      ["全通路報表", "同時看總營業額，也能分開比較網路商城與各實體門市。"],
     ];
     root().innerHTML = `
       <div class="home">
@@ -130,36 +131,35 @@
           <nav><a href="${esc(demo)}" target="_blank" rel="noopener">示範商店</a><a href="#admin">商家登入</a></nav>
         </div></header>
         <section class="home-hero"><div class="home-wrap">
-          <p class="home-kicker">台灣的網路開店平台 · 年費制</p>
-          <h1>開一家自己的網路商店，<br>賣多少都是你的。</h1>
-          <p class="home-lead">固定年費${h.annualFee ? ` ${money(h.annualFee)}` : ""}，平台<b>不抽成</b>。商品、訂單、會員、優惠券、進銷存，一套到位。</p>
+          <p class="home-kicker">網路商城 × 實體 POS × 共用庫存</p>
+          <h1>最快 90 分鐘開店，<br>線上與現場一起賣。</h1>
+          <p class="home-lead">固定年費從 <b>${money(basicFee)}</b> 起，平台成交<b>不抽成</b>。商品、訂單、會員、庫存與門市營業額，一套管理。</p>
           <div class="home-cta">${cta}<a class="btn btn-lg" href="${esc(demo)}" target="_blank" rel="noopener">先逛示範商店</a></div>
         </div></section>
         <section class="home-sec"><div class="home-wrap">
-          <h2>開店需要的，都已經準備好</h2>
+          <h2>小店真正每天會用到的，都放在一起</h2>
           <div class="home-grid">${feats.map(([t, d]) => `<div class="home-card"><h3>${esc(t)}</h3><p>${esc(d)}</p></div>`).join("")}</div>
         </div></section>
-        <section class="home-sec is-alt"><div class="home-wrap home-split">
+        <section class="home-sec is-alt"><div class="home-wrap home-audience">
+          <div><span class="home-tag">實體店家</span><h3>想增加網路接單</h3><p>商品與現場共用庫存，不必每天手動對兩套數字。</p></div>
+          <div><span class="home-tag">IG／LINE 賣家</span><h3>想有自己的商店</h3><p>把商品、訂單與會員集中，不再從聊天紀錄整理訂單。</p></div>
+          <div><span class="home-tag">工作室與選物店</span><h3>想簡單開始</h3><p>不用先學複雜系統，準備好商品就能跟著引導上線。</p></div>
+        </div></section>
+        <section class="home-sec"><div class="home-wrap home-split">
           <div>
-            <h2>三步驟開店</h2>
+            <h2>三步驟，最快 90 分鐘開始接單</h2>
             <ol class="home-steps">
               <li><b>建立帳號</b><span>用 Email 註冊，點確認信。</span></li>
               <li><b>取店名與網址</b><span>例如 <span class="mono">…/?store=hill-shop</span>，馬上可以分享。</span></li>
               <li><b>上架商品開賣</b><span>設定取貨方式與匯款帳號，就能接單。</span></li>
             </ol>
           </div>
-          <div class="home-price">
-            <span class="small muted">年費方案</span>
-            <strong>${h.annualFee ? money(h.annualFee) : "—"}<small>／年</small></strong>
-            <ul>
-              <li>0% 交易抽成</li>
-              ${h.trialDays ? `<li>先免費試用 ${h.trialDays} 天，不用綁卡</li>` : ""}
-              <li>所有功能都能用，商品數不限</li>
-              <li>一個帳號可以管理好幾家店</li>
-            </ul>
-            ${cta}
-          </div>
+          <div class="home-launch-note"><b>開始前只要準備</b><p>店名、Logo、商品照片與價格、庫存、銀行帳號、運費及退換貨方式。</p><a href="#admin/signup" class="btn btn-primary">開始建立商店</a></div>
         </div></section>
+        <section class="home-sec is-alt" id="pricing"><div class="home-wrap"><div class="home-sec-title"><div><span class="home-kicker">清楚、固定、不抽成</span><h2>選擇適合現在規模的方案</h2></div><span class="muted">${h.trialDays||30} 天免費試用・不用綁卡</span></div><div class="home-plans">
+          <article class="home-plan"><span class="home-tag">剛開始最適合</span><h3>基本開店版</h3><strong>${money(basicFee)}<small>／年</small></strong><p>約每月 ${money(Math.round(basicFee/12))}</p><ul><li>網路商城與訂單管理</li><li>商品、多規格與基本庫存</li><li>會員、優惠券與滿額活動</li><li>人工轉帳、取貨付款與出貨</li><li>單一店主帳號</li></ul>${cta}</article>
+          <article class="home-plan is-featured"><span class="home-tag">線上＋實體</span><h3>全通路版</h3><strong>${money(proFee)}<small>／年</small></strong><p>約每月 ${money(Math.round(proFee/12))}</p><ul><li>包含基本開店版全部功能</li><li>POS 收銀、門市與交班對帳</li><li>線上與現場共用庫存</li><li>員工帳號與權限</li><li>完整報表、會員標籤與庫存盤點</li></ul>${cta}</article>
+        </div><p class="home-honest">目前採銀行轉帳、取貨付款與人工寄件；信用卡自動收款、超商電子地圖、物流單與電子發票尚未串接。適合想先快速開始、能接受人工收款出貨的小型店家。</p></div></section>
         <section class="home-sec"><div class="home-wrap">
           <h2>常見問題</h2>
           <dl class="home-faq">
@@ -201,7 +201,7 @@
           <div class="side-foot">
             <a class="side-link" href="#home" target="_blank" rel="noopener">平台首頁 ↗</a>
             <a class="side-link" href="#admin">我的商家後台</a>
-            <div>v0.55 · 平台管理者</div>
+            <div>v0.58 · 平台管理者</div>
             <div class="side-user">${esc((DB.admin.user() || {}).email || "")}</div>
             <button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>
           </div>
@@ -256,6 +256,12 @@
         <a class="kpi" href="#platform/stores/soon"><span>30 天內到期</span><strong>${soon.length}</strong><small>已到期 ${count("expired")}・停用 ${count("suspended")}</small></a>
         <a class="kpi" href="#platform/billing"><span>${year} 年費收入</span><strong>${money(income)}</strong><small>近 30 天各店營收合計 ${money(gmv)}</small></a>
       </div>
+      <section class="panel task-panel"><div class="panel-head"><h2>今天待辦</h2><span class="small muted">把需要平台處理的事情集中在這裡</span></div><div class="task-grid">
+        <a href="#platform/requests"><b>申請</b><span>審核方案異動</span><small>前往處理 →</small></a>
+        <a href="#platform/stores/soon"><b>${soon.length}</b><span>家 30 天內到期</span><small>聯絡續約 →</small></a>
+        <a href="#platform/stores/expired"><b>${count("expired")}</b><span>家已到期</span><small>查看名單 →</small></a>
+        <a href="#platform/stores"><b>${st.filter(usageHigh).length}</b><span>家用量接近上限</span><small>檢查使用量 →</small></a>
+      </div></section>
       <section class="panel">
         <div class="panel-head"><h2>即將到期（30 天內）</h2><a class="small" href="#platform/stores/soon">全部</a></div>
         ${storesTable(soon.slice(0, 8), "30 天內沒有商店到期")}
@@ -486,7 +492,7 @@
     });
   }
 
-  async function viewRequests(){shell('requests',`<div class="page-head"><h1>方案申請</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.platform.requests();document.getElementById('main').innerHTML=`<div class="page-head"><h1>方案申請</h1><span class="muted">${rows.filter(x=>x.status==='pending').length} 筆待處理</span></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>商店</th><th>申請內容</th><th>申請人</th><th>時間</th><th>狀態</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td><b>${esc(r.storeName)}</b><div class="small muted">${esc(r.storeSlug)}</div></td><td>${r.kind==='renew'?`續約 ${r.years} 年`:r.kind==='upgrade'?'升級進階版':'改為基本版'}${r.note?`<div class="small muted">${esc(r.note)}</div>`:''}</td><td>${esc(r.requestedBy)}</td><td>${date(r.createdAt,true)}</td><td><span class="pill ${r.status==='pending'?'warn':r.status==='approved'?'ok':'idle'}">${{pending:'待處理',approved:'已核准',rejected:'未核准',cancelled:'已取消'}[r.status]}</span></td><td>${r.status==='pending'?`<button class="btn btn-sm btn-primary" data-ok="${r.id}">核准</button> <button class="btn btn-sm" data-no="${r.id}">不核准</button>`:esc(r.platformNote||'')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有方案申請</div>'}</section>`;const go=async(id,status)=>{const note=prompt('處理說明（商家看得到，可留空）','')||'';try{await DB.platform.resolveRequest(id,status,note);toast('已完成處理');viewRequests();}catch(e){toast(e.message,'error');}};document.querySelectorAll('[data-ok]').forEach(b=>b.onclick=()=>go(b.dataset.ok,'approved'));document.querySelectorAll('[data-no]').forEach(b=>b.onclick=()=>go(b.dataset.no,'rejected'));}catch(e){toast(e.message,'error');}}
+  async function viewRequests(){shell('requests',`<div class="page-head"><h1>方案申請</h1></div><div class="panel"><div class="empty">載入中…</div></div>`);try{const rows=await DB.platform.requests();document.getElementById('main').innerHTML=`<div class="page-head"><h1>方案申請</h1><span class="muted">${rows.filter(x=>x.status==='pending').length} 筆待處理</span></div><section class="panel">${rows.length?`<div class="table-wrap"><table class="tbl"><thead><tr><th>商店</th><th>申請內容</th><th>申請人</th><th>時間</th><th>狀態</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td><b>${esc(r.storeName)}</b><div class="small muted">${esc(r.storeSlug)}</div></td><td>${r.kind==='renew'?`續約 ${r.years} 年`:r.kind==='upgrade'?'升級全通路版':'改為基本版'}${r.note?`<div class="small muted">${esc(r.note)}</div>`:''}</td><td>${esc(r.requestedBy)}</td><td>${date(r.createdAt,true)}</td><td><span class="pill ${r.status==='pending'?'warn':r.status==='approved'?'ok':'idle'}">${{pending:'待處理',approved:'已核准',rejected:'未核准',cancelled:'已取消'}[r.status]}</span></td><td>${r.status==='pending'?`<button class="btn btn-sm btn-primary" data-ok="${r.id}">核准</button> <button class="btn btn-sm" data-no="${r.id}">不核准</button>`:esc(r.platformNote||'')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">還沒有方案申請</div>'}</section><div id="platform-dialog"></div>`;const go=(id,status)=>{const box=document.getElementById('platform-dialog');box.innerHTML=`<div class="pos-modal"><form class="pos-modal-card" id="resolve-form"><h2>${status==='approved'?'確認核准申請':'確認不核准申請'}</h2><p class="muted">請留下處理說明，商家會看見這段內容。</p><div class="field"><label>處理說明（選填）</label><textarea id="resolve-note" rows="4" maxlength="500"></textarea></div><div class="actions"><button class="btn" type="button" id="resolve-cancel">取消</button><button class="btn ${status==='approved'?'btn-primary':'btn-danger'}" type="submit">確認送出</button></div></form></div>`;document.getElementById('resolve-cancel').onclick=()=>box.innerHTML='';document.getElementById('resolve-form').onsubmit=async e=>{e.preventDefault();try{await DB.platform.resolveRequest(id,status,document.getElementById('resolve-note').value.trim());toast('已完成處理');viewRequests();}catch(err){toast(err.message,'error');}};};document.querySelectorAll('[data-ok]').forEach(b=>b.onclick=()=>go(b.dataset.ok,'approved'));document.querySelectorAll('[data-no]').forEach(b=>b.onclick=()=>go(b.dataset.no,'rejected'));}catch(e){toast(e.message,'error');}}
 
   window.PlatformApp = function (parts) {
     const [, page, arg] = parts;

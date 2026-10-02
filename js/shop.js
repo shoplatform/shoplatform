@@ -266,7 +266,8 @@
           <a href="#shop" class="${!categoryId && !query ? "is-on" : ""}" data-clear="1">全部</a>
           ${cats.map(c => `<a href="#shop/c/${c.id}" class="${categoryId === c.id ? "is-on" : ""}">${esc(c.name)}</a>`).join("")}
         </nav>
-        <section class="s-filters" aria-label="商品篩選">
+        <button class="s-filter-toggle" type="button" id="sf-toggle" aria-expanded="${filtered?'true':'false'}">篩選與排序${filtered?'・已套用條件':''}<span>⌄</span></button>
+        <section class="s-filters ${filtered?'is-open':''}" aria-label="商品篩選" id="sf-panel">
           <label>排序<select id="sf-sort"><option value="">推薦排序</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>價格：低到高</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>價格：高到低</option></select></label>
           <label>最低價格<input type="number" id="sf-min" min="0" step="1" inputmode="numeric" value="${esc(filters.min)}" placeholder="不限"></label>
           <label>最高價格<input type="number" id="sf-max" min="0" step="1" inputmode="numeric" value="${esc(filters.max)}" placeholder="不限"></label>
@@ -291,6 +292,8 @@
         ${front && DB.favorites.recent().length ? `<section class="s-recent"><h2>最近看過</h2><div class="s-grid">${DB.favorites.recent().slice(0, 4).map(p => `<a class="s-card" href="#shop/p/${p.id}">${img(p)}<span class="s-name">${esc(p.name)}</span><span class="s-price">${priceText(p)}</span></a>`).join("")}</div></section>` : ""}
       </div>`);
     bindFavorites(() => viewHome(categoryId));
+    const filterToggle=document.getElementById("sf-toggle"),filterPanel=document.getElementById("sf-panel");
+    filterToggle.addEventListener("click",()=>{const open=filterPanel.classList.toggle("is-open");filterToggle.setAttribute("aria-expanded",String(open));});
     root().querySelectorAll("[data-clear]").forEach(a => a.addEventListener("click", () => { query = ""; syncShopUrl(); }));
     const applyFilters = () => {
       filters.sort = document.getElementById("sf-sort").value;
