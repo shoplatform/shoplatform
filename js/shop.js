@@ -529,6 +529,7 @@
         </form>
       </div>`);
 
+    if(DB.invoices.publicConfig().enabled){document.getElementById('co-note').closest('section').insertAdjacentHTML('beforebegin',`<section class="s-box">${InvoiceUI.fields('co-invoice',{email:form.email})}</section>`);InvoiceUI.bind('co-invoice');}
     const f = document.getElementById("co-form");
     function readForm() {
       form.name = f.querySelector("#co-name").value.trim();
@@ -578,10 +579,11 @@
       const btn = f.querySelector("button[type=submit]");
       if (btn) { btn.disabled = true; btn.textContent = "送出中…"; }
       try {
+        const invoiceEmail=document.getElementById('co-invoice-email');if(invoiceEmail&&!invoiceEmail.value.trim())invoiceEmail.value=form.email;
         const o = await DB.orders.create({
           contact: { name: form.name, phone: form.phone, email: form.email },
           shipping: { methodId: form.ship, address: form.address, storeName: form.storeName },
-          paymentMethodId: form.pay, note: form.note, hp: (document.getElementById("co-web") || {}).value || "",
+          paymentMethodId: form.pay, note: form.note, invoice:DB.invoices.publicConfig().enabled?InvoiceUI.read('co-invoice'):null,hp: (document.getElementById("co-web") || {}).value || "",
         });
         form.note = "";
         Router.go("shop/done/" + o.number);

@@ -81,12 +81,13 @@
         <aside class="side">
           <div class="side-brand"><strong>${esc(st.name)}</strong><span>商家後台</span></div>
           <nav aria-label="後台選單">${navHtml(link, c, poOpen)}</nav>
+          ${can('pos')||can('orders')?'<a class="side-link" href="#admin/invoices">電子發票</a>':''}
           <div class="side-foot">
             ${DB.features.pos && can("pos") ? `<a class="side-link" href="#pos">開啟 POS 收銀台</a>` : ""}
             ${remote ? `<a class="side-link" href="${esc(DB.admin.storeUrl(DB.admin.store().slug))}#shop" target="_blank" rel="noopener">查看我的商店 ↗</a>
             <a class="side-link" href="#admin/stores">我的商店${DB.admin.stores().length > 1 ? `（${DB.admin.stores().length}）` : ""}・開新店</a>
             ${DB.admin.isPlatform() ? `<a class="side-link" href="#platform">平台總控台</a>` : ""}` : ""}
-            <div>${remote ? "v0.58 · 資料庫已連線" : "v0.58 · 離線示範版"}</div>
+            <div>${remote ? "v0.61 · 資料庫已連線" : "v0.61 · 離線示範版"}</div>
             ${DB.admin.user() ? `<div class="side-user">${esc(DB.admin.user().email)}${remote ? `<span class="small muted">・${DB.admin.me().role === "owner" ? "店主" : "員工"}</span>` : ""}</div>` : ""}
             ${remote ? `<button class="btn btn-sm btn-ghost" id="side-logout" type="button">登出</button>` : ""}
           </div>
@@ -395,7 +396,7 @@
   async function viewReports() {
     const [from, to] = rangeDates(rRange);
     shell("reports", `
-      <div class="page-head"><h1>報表</h1><div class="actions"><button class="btn" id="rp-export" type="button" disabled>匯出 Excel</button></div></div>
+      <div class="page-head"><h1>報表</h1><div class="actions"><button class="btn" id="rp-export-pdf" type="button" disabled>匯出 PDF</button><button class="btn" id="rp-export" type="button" disabled>匯出 Excel</button></div></div>
       <div class="rp-bar">
         <div class="seg" role="group" aria-label="期間">${RANGES.map(([k, t]) => `<button type="button" class="${rRange === k ? "is-on" : ""}" data-range="${k}" aria-pressed="${rRange === k}">${t}</button>`).join("")}</div>
         <div class="rp-dates" ${rRange === "custom" ? "" : "hidden"}><input type="date" id="rp-from" value="${from}" aria-label="開始日期"><span class="muted">～</span><input type="date" id="rp-to" value="${to}" aria-label="結束日期"><button class="btn btn-sm" id="rp-go" type="button">查詢</button></div>
@@ -475,6 +476,9 @@
     const ex = document.getElementById("rp-export");
     ex.disabled = false;
     ex.addEventListener("click", () => exportReport(R));
+    const pdf = document.getElementById("rp-export-pdf");
+    pdf.disabled = false;
+    pdf.addEventListener("click", () => exportReportPdf(R));
   }
 
   // 營收長條圖：單一數列（標題說明是什麼），滑過去顯示營收、訂單、毛利
@@ -533,6 +537,13 @@
     ];
     download(XLSX.build(sheets), `報表_${R.from}_${R.to}.xlsx`);
     toast("已匯出報表");
+  }
+  function exportReportPdf(R) {
+    const S=R.summary, rows=R.products.slice(0,30).map((x,i)=>[i+1,x.name,x.qty,x.orders,money(x.sales),money(x.sales-x.cost)]);
+    printTablePdf(`營運報表_${R.from}_${R.to}`,`營運報表`,[
+      ["期間",`${R.from} ～ ${R.to}`],["營收",money(S.revenue)],["訂單",`${S.orders} 筆`],["銷售件數",`${S.units} 件`],
+      ["毛利",money(S.gross)],["平均客單",money(S.orders?S.revenue/S.orders:0)],["退款",money((R.refunds||{}).amount||0)],["進貨花費",money(R.purchases.amount)]
+    ],["#","熱銷商品","件數","訂單數","銷售額","毛利"],rows);
   }
 
   /* ---------- 商店網址、方案（資料庫版） ---------- */
@@ -775,7 +786,7 @@
     const cats = DB.categories.list();
     shell("products", `
       <div class="page-head"><h1>商品</h1><div class="actions">
-        <button class="btn" type="button" id="pp-export">匯出 Excel</button><button class="btn" type="button" id="pp-import">匯入 Excel</button>
+        <button class="btn" type="button" id="pp-export-pdf">匯出 PDF</button><button class="btn" type="button" id="pp-export">匯出 Excel</button><button class="btn" type="button" id="pp-import">匯入 Excel</button>
         <a class="btn" href="#admin/products/sort">調整排序</a><a class="btn btn-primary" href="#admin/product/new">新增商品</a></div></div>
       <section class="panel">
         <div class="panel-head">
@@ -814,6 +825,11 @@
       const cols = ex.header.map(h => ({ header: h, width: h === "商品ID" ? 38 : h === "商品描述" ? 30 : h === "商品名稱" ? 22 : 12, type: ["售價", "成本", "庫存"].includes(h) ? "number" : "text" }));
       download(XLSX.build([{ name: "商品", columns: cols, rows: ex.rows }]), `商品_${new Date().toISOString().slice(0, 10)}.xlsx`);
       toast(`已匯出 ${ex.rows.length} 個規格`);
+    });
+    document.getElementById("pp-export-pdf").addEventListener("click",()=>{
+      const list=DB.products.list(pf),catName=id=>(cats.find(c=>c.id===id)||{}).name||"";
+      printTablePdf(`商品_${new Date().toISOString().slice(0,10)}`,"商品清單",[["篩選結果",`${list.length} 項商品`]],
+        ["商品","分類","規格數","價格","庫存","狀態"],list.map(p=>{const [lo,hi]=DB.products.priceRange(p);return [p.name,p.categoryIds.map(catName).filter(Boolean).join("、")||"未分類",p.variants.length,lo===hi?money(lo):`${money(lo)}～${money(hi)}`,DB.products.totalStock(p),DB.products.schedule(p)==="active"?"上架中":"草稿／未上架"];}));
     });
     document.getElementById("pp-import").addEventListener("click", importPrompt);
   }
@@ -1266,7 +1282,7 @@
     const wrap = document.createElement("div");
     wrap.className = "modal-backdrop";
     wrap.innerHTML = `<form class="modal is-wide" id="ex-form" role="dialog" aria-modal="true" aria-labelledby="ex-title">
-      <h3 id="ex-title">匯出訂單 Excel</h3>
+      <h3 id="ex-title">匯出訂單</h3>
       <p>會匯出目前分頁（<b>${esc(statusLabel)}</b>）${oq ? `、搜尋「${esc(oq)}」` : ""}的訂單。</p>
       <div class="radio-list">
         <label class="check"><input type="radio" name="ex-range" value="all" checked> 不限日期</label>
@@ -1278,7 +1294,8 @@
         <div class="field"><label for="ex-to">到</label><input type="date" id="ex-to" value="${ymd(today)}"></div>
       </div>
       <p class="small" id="ex-count"></p>
-      <div class="modal-actions"><button type="button" class="btn" id="ex-cancel">取消</button><button class="btn btn-primary" type="submit" id="ex-go">下載 .xlsx</button></div>
+      <div class="field"><label for="ex-format">檔案格式</label><select id="ex-format"><option value="xlsx">Excel（可整理資料）</option><option value="pdf">PDF（適合列印／傳閱）</option></select></div>
+      <div class="modal-actions"><button type="button" class="btn" id="ex-cancel">取消</button><button class="btn btn-primary" type="submit" id="ex-go">下載 Excel</button></div>
     </form>`;
     document.body.appendChild(wrap);
     const f = wrap.querySelector("#ex-form");
@@ -1302,6 +1319,7 @@
     };
     refresh();
     f.addEventListener("change", refresh);
+    f.querySelector("#ex-format").addEventListener("change",e=>{f.querySelector("#ex-go").textContent=e.target.value==="pdf"?"產生 PDF":"下載 Excel";});
     const close = () => wrap.remove();
     wrap.querySelector("#ex-cancel").addEventListener("click", close);
     wrap.addEventListener("click", e => { if (e.target === wrap) close(); });
@@ -1313,10 +1331,10 @@
       try {
         const list = (await DB.orders.query(fl, { offset: 0, limit: 20000 })).rows;
         if (!list.length) return;
-        exportOrders(list, fl);
+        if(f.querySelector("#ex-format").value==="pdf") exportOrdersPdf(list,fl); else exportOrders(list, fl);
         close();
         toast(`已匯出 ${list.length} 筆訂單`);
-      } catch (err) { toast(err.message, "error"); go.disabled = false; go.textContent = "下載 .xlsx"; }
+      } catch (err) { toast(err.message, "error"); go.disabled = false; go.textContent = "重新匯出"; }
     });
   }
 
@@ -1361,6 +1379,11 @@
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
     const tag = fl.status ? "_" + DB.orders.STATUS[fl.status] : "";
     download(XLSX.build([orderSheet, itemSheet]), `訂單${tag}_${stamp}.xlsx`);
+  }
+  function exportOrdersPdf(list,fl){
+    const tag=fl.status?`_${DB.orders.STATUS[fl.status]}`:"";
+    printTablePdf(`訂單${tag}_${new Date().toISOString().slice(0,10)}`,"訂單清單",[["訂單狀態",fl.status?DB.orders.STATUS[fl.status]:"全部"],["筆數",`${list.length} 筆`]],
+      ["訂單編號","日期","顧客","付款","狀態","件數","總額"],list.map(o=>[o.number,date(o.createdAt,true),o.contact.name,o.payment.status==="paid"?"已付款":"未付款",DB.orders.STATUS[o.status],o.items.reduce((n,i)=>n+i.qty,0),money(o.total)]));
   }
 
   /* ---------- 訂單詳情 ---------- */
@@ -1429,6 +1452,7 @@
               <dt>方式</dt><dd>${esc(o.payment.methodName)}</dd>
             </dl><div class="notice">金流尚未串接，付款狀態由商家手動確認。</div></div>
           </section>
+          <section class="panel"><div class="panel-head"><h2>電子發票</h2><a class="btn btn-sm" href="#admin/invoices">查看發票紀錄</a></div><div class="panel-body"><p class="small muted">開票與付款分開記錄。請在發票列表確認發票號碼、測試／正式環境與待處理原因。</p></div></section>
           <section class="panel">
             <div class="panel-head"><h2>物流</h2></div>
             <div class="panel-body"><dl class="kv">
@@ -1499,6 +1523,13 @@
     const end = () => { document.body.classList.remove("printing"); document.title = old; box.innerHTML = ""; window.removeEventListener("afterprint", end); };
     window.addEventListener("afterprint", end);
     setTimeout(() => { window.print(); setTimeout(end, 500); }, 50);
+  }
+  function printTablePdf(fileTitle,heading,summary,columns,rows){
+    const st=DB.settings.get(),generated=new Date().toLocaleString("zh-TW");
+    const summaryHtml=summary&&summary.length?`<div class="pd-summary">${summary.map(([k,v])=>`<div><span>${esc(k)}</span><b>${esc(String(v))}</b></div>`).join("")}</div>`:"";
+    const body=rows.length?rows.map(r=>`<tr>${columns.map((_,i)=>`<td>${esc(r[i]==null?"":String(r[i]))}</td>`).join("")}</tr>`).join(""):`<tr><td colspan="${columns.length}" style="text-align:center">沒有資料</td></tr>`;
+    printDocs(fileTitle,`<section class="pdoc pdoc-report"><header class="pd-head"><div><div class="pd-store">${esc(st.name||"商店")}</div><div class="pd-small">${esc(heading)}</div></div><div class="pd-r"><div class="pd-title">${esc(heading)}</div><div class="pd-small">產生時間：${esc(generated)}</div></div></header>${summaryHtml}<table class="pd-tbl"><thead><tr>${columns.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table><footer class="pd-foot">${esc(st.name||"")}・由商家後台匯出</footer></section>`);
+    toast("已開啟列印視窗，請選擇「儲存為 PDF」");
   }
   const shipTo = o => o.shipping.storeName ? `${o.shipping.methodName}・${o.shipping.storeName}` : o.shipping.address ? `${o.shipping.methodName}・${o.shipping.address}` : o.shipping.methodName;
   function printShipping(list, withPrice) {
@@ -1623,7 +1654,7 @@
     const on = cfg.enabled;
     if (!on) ctier = "";
     shell("customers", `
-      <div class="page-head"><h1>會員</h1><div class="actions"><button class="btn" id="c-tags">管理標籤</button><button class="btn" id="c-export">匯出 Excel</button>${on ? `<a class="btn" href="#admin/tiers">會員等級設定</a>` : ""}</div></div>
+      <div class="page-head"><h1>會員</h1><div class="actions"><button class="btn" id="c-tags">管理標籤</button><button class="btn" id="c-export-pdf">匯出 PDF</button><button class="btn" id="c-export">匯出 Excel</button>${on ? `<a class="btn" href="#admin/tiers">會員等級設定</a>` : ""}</div></div>
       <section class="panel">
         <div class="panel-head"><div class="toolbar">
           <input type="search" id="cq" placeholder="搜尋姓名、手機、Email" value="${esc(cq)}" aria-label="搜尋會員">
@@ -1661,11 +1692,13 @@
     if (sel) sel.addEventListener("change", e => { ctier = e.target.value; cPage = 0; draw(); });
     document.getElementById("ctag").addEventListener("change", e => { ctag = e.target.value; cPage = 0; draw(); });
     document.getElementById("c-tags").addEventListener("click", () => customerTagManager(tags, () => viewCustomers()));
+    const allCustomers=async()=>{const rows=[];let offset=0,total=0;do{const r=await DB.customers.query({q:cq,tier:ctier,tag:ctag},{offset,limit:200});total=+r.total||0;rows.push(...r.rows);offset+=r.rows.length;}while(offset<total);return rows;};
+    document.getElementById("c-export-pdf").addEventListener("click",async e=>{const b=e.currentTarget;b.disabled=true;b.textContent="整理中…";try{const rows=await allCustomers();printTablePdf(`會員_${new Date().toISOString().slice(0,10)}`,"會員清單",[["篩選結果",`${rows.length} 位會員`]],
+      ["姓名","手機","Email","等級","標籤","訂單","累積消費"],rows.map(c=>[c.name,c.phone,c.email||"—",c.level?c.level.tier.name:"—",(c.tags||[]).map(t=>t.name).join("、")||"—",c.orderCount,money(c.totalSpent)]));}catch(err){toast(err.message,"error");}finally{b.disabled=false;b.textContent="匯出 PDF";}});
     document.getElementById("c-export").addEventListener("click", async e => {
       const b = e.currentTarget; b.disabled = true; b.textContent = "整理中…";
       try {
-        const rows = []; let offset = 0, total = 0;
-        do { const r = await DB.customers.query({ q: cq, tier: ctier, tag: ctag }, { offset, limit: 200 }); total = +r.total || 0; rows.push(...r.rows); offset += r.rows.length; } while (offset < total);
+        const rows = await allCustomers();
         download(XLSX.build([{ name: "會員", columns: [
           { header: "姓名", width: 12 }, { header: "手機", width: 14 }, { header: "Email", width: 26 }, { header: "會員等級", width: 12 },
           { header: "標籤", width: 24 }, { header: "訂單數", width: 10, type: "number" }, { header: "累積消費", width: 12, type: "number" },
@@ -2236,7 +2269,7 @@
     const s = DB.inventory.summary();
     shell("stock", `
       <div class="page-head"><h1>庫存</h1>
-        <div class="actions"><a class="btn" href="#admin/moves">異動紀錄</a><button class="btn" id="st-export">匯出 Excel</button><a class="btn btn-primary" href="#admin/purchase/new">建立進貨單</a></div>
+        <div class="actions"><a class="btn" href="#admin/moves">異動紀錄</a><button class="btn" id="st-export-pdf">匯出 PDF</button><button class="btn" id="st-export">匯出 Excel</button><a class="btn btn-primary" href="#admin/purchase/new">建立進貨單</a></div>
       </div>
       <div class="kpis">
         <div class="kpi"><span>規格數</span><strong>${s.skus}</strong><small>含草稿商品</small></div>
@@ -2287,6 +2320,8 @@
       }]), `庫存_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.xlsx`);
       toast(`已匯出 ${rows.length} 個規格`);
     });
+    document.getElementById("st-export-pdf").addEventListener("click",()=>{const rows=DB.inventory.list(sf);printTablePdf(`庫存_${new Date().toISOString().slice(0,10)}`,"庫存清單",[["篩選結果",`${rows.length} 個規格`],["庫存件數",rows.reduce((n,r)=>n+r.stock,0)],["庫存成本",money(rows.reduce((n,r)=>n+r.value,0))]],
+      ["商品","規格","貨號","狀態","可售","在途","平均成本","庫存成本"],rows.map(r=>[r.name,r.optionText||"單一規格",r.sku,r.status==="active"?"上架中":"草稿",r.stock,r.incoming,money(r.cost),money(r.value)]));});
   }
 
   function adjustPrompt(variantId, after) {
@@ -2800,6 +2835,12 @@
 
   window.AdminApp = function (parts) {
     const [, page, arg] = parts;
+    if(['invoices','invoice-settings'].includes(page)){
+      if(!can('pos')&&!can('orders'))return noPerm('pos');
+      if(page==='invoice-settings'&&!can('owner'))return noPerm('owner');
+      shell('invoices','<div class="panel"><div class="empty">載入電子發票…</div></div>');
+      return InvoiceUI[page==='invoice-settings'?'settings':'list'](document.getElementById('main')).catch(e=>{document.getElementById('main').innerHTML=`<div class="notice">${esc(e.message)}</div>`;});
+    }
     if (PAGE_PERM[page] && !can(PAGE_PERM[page])) return noPerm(PAGE_PERM[page]);
     if (!DB.features.inventory && ["stock", "moves", "purchases", "purchase", "suppliers", "supplier"].includes(page)) return phaseTwo("", "進銷存");
     if (!DB.features.tiers && page === "tiers") return phaseTwo("", "會員等級");

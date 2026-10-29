@@ -1,5 +1,5 @@
-/* v0.58 ====================================================
- * db.js — 資料層（Supabase 資料庫版，v0.58）
+/* v0.61 ====================================================
+ * db.js — 資料層（Supabase 資料庫版，v0.61）
  *
  * 頁面只透過 window.DB 讀寫資料，介面跟離線示範版 db-local.js 一樣：
  *   ‧讀取是同步的：從「快取」拿資料（進入頁面前先 DB.ready() 載好）
@@ -136,6 +136,7 @@
   async function loadShop() {
     const d = normalize(await rpc("shop_catalog", { p_slug: shopSlug() }));
     cache.shop = Object.assign(empty(), d, { loadedAt: Date.now() });
+    cache.invoicePublic = await rpc('shop_invoice_config',{p_slug:shopSlug()});
   }
   // 前台會員：有登入就載入會員資料和訂單
   async function loadMember() {
@@ -832,12 +833,12 @@
     window: () => ({ loaded: C().orders.length, total: C().orderTotal != null ? C().orderTotal : C().orders.length, days: 120 }),
 
     /* 前台下單：資料庫檢查庫存、算金額、建立訂單 */
-    async create({ contact, shipping, paymentMethodId, note, hp }) {
+    async create({ contact, shipping, paymentMethodId, note, hp, invoice }) {
       const lines = cart.items();
       if (!lines.length) throw new Error("購物車是空的");
       const view = await rpc("shop_place_order", { p_slug: shopSlug(), p_order: {
         items: lines.map(l => ({ variantId: l.variantId, qty: l.qty })),
-        contact, shipping, paymentMethodId, note: note || "", coupon: cart.coupon(), hp: hp || "",
+        contact, shipping, paymentMethodId, invoice, note: note || "", coupon: cart.coupon(), hp: hp || "",
       } });
       guestPass[view.number] = { view, phone: contact.phone };
       cart.clear();
@@ -879,6 +880,7 @@
       await rpc("admin_set_order_status", { p_store: adminStore.id, p_order: id, p_status: status,
         p_tracking: extra.trackingNo !== undefined ? extra.trackingNo : null, p_note: extra.note || null });
       await afterWrite();
+      invoices.process(id).catch(()=>{});
     },
     async setNote(id, note) { await rpc("admin_set_order_note", { p_store: adminStore.id, p_order: id, p_note: note }); await afterWrite(); },
   };
@@ -1022,26 +1024,49 @@
 
   /* ---------- POS、門市與全通路 ---------- */
   const pos = {
+    recent:locationId=>rpc('admin_pos_recent',{p_store:adminStore.id,p_location:locationId}),
     locations: () => clone(C().locations || []),
     async saveLocation(input) { const id = await rpc("admin_save_location", { p_store: adminStore.id, p_location: input }); await afterWrite(); return id; },
     shifts: (limit = 100) => rpc("admin_pos_shifts", { p_store: adminStore.id, p_limit: limit }),
     openShift: (locationId, openingCash) => rpc("admin_pos_open_shift", { p_store: adminStore.id, p_location: locationId, p_opening: Math.round(+openingCash || 0) }),
     closeShift: (shiftId, actualCash, note) => rpc("admin_pos_close_shift", { p_store: adminStore.id, p_shift: shiftId, p_actual: Math.round(+actualCash || 0), p_note: note || "" }),
     cashEvent: (shiftId, kind, amount, reason) => rpc("admin_pos_cash_event", { p_store: adminStore.id, p_shift: shiftId, p_kind: kind, p_amount: Math.round(+amount || 0), p_reason: reason || "" }),
-    async sale({ locationId, shiftId, items, discount, payment, customerId, note }) {
-      const o = await rpc("admin_pos_sale", { p_store: adminStore.id, p_location: locationId, p_shift: shiftId,
+    async recordSale({locationId,shiftId,items}) {
+      const o=await rpc('admin_pos_sale',{p_store:adminStore.id,p_location:locationId,p_shift:shiftId,p_items:items.map(x=>x.bundle?{bundle:true,name:x.name,price:Math.round(+x.price||0),qty:x.qty,components:x.components.map(c=>({variantId:c.variantId,qty:c.qty}))}:{variantId:x.variantId,qty:x.qty}),p_discount:0,p_payment:'other',p_customer:null,p_note:'POS 簡易銷售紀錄（未記錄付款方式、未開立發票）'});
+      await afterWrite().catch(()=>{});
+      o.invoiceResult={status:'disabled'};return o;
+    },
+    async sale({ locationId, shiftId, items, discount, payment, customerId, note, invoice, requestId, delivery }) {
+      const o = await rpc("admin_pos_sale_v2", { p_store: adminStore.id, p_location: locationId, p_shift: shiftId,p_invoice:invoice||null,p_request:requestId||crypto.randomUUID(),p_delivery:delivery||{},
         p_items: items.map(x => x.bundle ? ({ bundle: true, name: x.name, price: Math.round(+x.price || 0), qty: x.qty, components: x.components.map(c => ({ variantId: c.variantId, qty: c.qty })) }) : ({ variantId: x.variantId, qty: x.qty })), p_discount: Math.round(+discount || 0), p_payment: payment,
         p_customer: customerId || null, p_note: note || "" });
-      await afterWrite(); return o;
+      // 收款已成功，刷新或開票故障不能讓櫃檯再次送出同一筆銷售。
+      await afterWrite().catch(()=>{});
+      o.invoiceResult={status:invoice?'pending':'disabled'};
+      if(invoice)invoices.process(o.id).then(result=>{o.invoiceResult=result;window.dispatchEvent(new CustomEvent('pos-invoice-result',{detail:{orderId:o.id,result}}));}).catch(()=>{});
+      return o;
     },
     channelReport: (from, to) => rpc("admin_channel_report", { p_store: adminStore.id, p_from: from, p_to: to }),
   };
 
+  async function invoiceEdge(action,payload={}){
+    const {data,error}=await sbAdmin.functions.invoke('amego-invoice',{body:{action,storeId:adminStore.id,...payload}});
+    if(error||data?.error)throw new Error(data?.error||'電子發票服務尚未就緒，請確認後端部署');
+    return data;
+  }
+  const invoices={
+    publicConfig:()=>clone(cache.invoicePublic||{enabled:false}),
+    config:()=>rpc('admin_invoice_config',{p_store:adminStore.id}),
+    list:(offset=0,status='')=>rpc('admin_invoice_list',{p_store:adminStore.id,p_offset:offset,p_status:status}),
+    save:(settings,appKey)=>invoiceEdge('save',{settings,appKey}),
+    test:(settings,appKey)=>invoiceEdge('test',{settings,appKey}),
+    process:(orderId,force=false)=>invoiceEdge('process',{orderId,force}),
+  };
   window.DB = {
     mode: "remote", features, ready, admin, takeNotice, boot, platform, home,
     shopState: () => ({ closed: !!(cache.shop && cache.shop.closed), message: (cache.shop && cache.shop.closedMessage) || "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, pos, staff, reviews, favorites, returns, stockCounts, restocks, notifications,
+    inventory, suppliers, purchases, reports, pos, invoices, staff, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset: notYet,
   };

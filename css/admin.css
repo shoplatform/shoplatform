@@ -338,6 +338,7 @@ a.kpi:hover { border-color: var(--accent); }
 .pd-ck { width: 24px; text-align: center !important; }
 .pd-note { border: 1px dashed #999; padding: 8px; margin-bottom: 12px; font-size: 10pt; }
 .pd-foot { font-size: 9pt; color: #555; text-align: center; margin-top: 16px; }
+.pd-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 12px}.pd-summary>div{display:grid;border:1px solid #bbb;padding:7px}.pd-summary span{font-size:9pt;color:#555}.pd-summary b{font-size:12pt}.pdoc-report .pd-tbl{font-size:9pt}.pdoc-report .pd-tbl thead{display:table-header-group}.pdoc-report .pd-tbl tr{break-inside:avoid}
 
 /* v0.15：商品排序、匯入、排程 */
 .sort-list { list-style: none; margin: 0; padding: 0; }
@@ -380,6 +381,12 @@ a.kpi:hover { border-color: var(--accent); }
 @media(max-width:800px){.pos-head .pos-head-btn{display:inline-grid}.pos-head>a.btn{display:none}.pos-location-label span{display:none}.pos-shift-strip{padding:8px 12px;gap:8px 18px}.pos-reconcile-grid{grid-template-columns:1fr}.pos-bundle-row{align-items:flex-start}}
 .pos-close-note{margin:4px 0 14px;padding:10px 12px;border-radius:9px;background:#fff4d6;color:#765300;font-size:13px}.pos-reconcile .actions button:disabled{opacity:.6;cursor:wait}
 
+.invoice-fields{min-width:0;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:10px;display:grid;gap:8px}.invoice-fields legend{padding:0 6px;font-weight:700}.invoice-fields label{display:block;font-size:13px;margin:4px 0}.invoice-fields input,.invoice-fields select{width:100%;min-width:0}.invoice-fields [hidden]{display:none!important}.invoice-error{white-space:normal!important;max-width:280px;overflow-wrap:anywhere}.pos-categories{display:flex;gap:6px;overflow:auto;flex:0 0 auto;padding:8px 14px;border-bottom:1px solid #e3e7eb}.pos-categories button{flex:0 0 auto}.pos-categories .is-on{background:#1267cf;color:#fff}.pos-bill-form{overflow:auto;max-height:65vh}.pos-success{flex-wrap:wrap}.pos-success small{flex-basis:100%}.pos-app .invoice-fields{color:#17202a;border-color:#cbd5df}.pos-app .invoice-fields input,.pos-app .invoice-fields select{background:#fff;color:#17202a}.pos-app .pos-modal-card{color:#17202a}
+@media(max-width:800px){.pos-bill-form{max-height:none}.pos-success{margin:8px}.invoice-fields{padding:10px}}
+@media(max-width:600px){.pos-head{flex-wrap:wrap;gap:8px}.pos-head>div:first-child{width:100%;display:flex;align-items:center;justify-content:space-between}.pos-head>div:first-child b{font-size:18px}.pos-head-actions{width:100%;gap:6px;justify-content:flex-start}.pos-location-label{flex:1;min-width:110px}.pos-location-label select{min-width:0;width:100%}.pos-head-actions .btn{font-size:12px}.pos-searchbar{position:static}}
+.pos-pay-footer{flex:0 0 auto;padding:8px 14px 14px;background:#fff;border-top:1px solid #dce1e6;border-radius:0 0 14px 14px}.pos-pay-footer .pos-grand{border-top:0}.pos-bill-form{min-height:0;flex-shrink:1}.pos-bill-items{min-height:70px}
+.pos-delivery{padding:10px 0;border-top:1px solid #dce1e6}.pos-delivery summary{cursor:pointer;font-weight:700}.pos-delivery label{display:block;margin-top:8px}.pos-delivery input:not([type=checkbox]){width:100%;background:#fff;color:#17202a}.pos-delivery [hidden]{display:none!important}
+.pos-pending{margin:8px 14px;padding:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fff3cd;border:1px solid #e6c96a;border-radius:10px;color:#765300}.pos-pending span{flex:1;min-width:200px}
 /* v0.58：任務導向導覽與雙方案銷售頁 */
 .side-group{margin:4px 0}.side-group summary{list-style:none;display:flex;justify-content:space-between;align-items:center;padding:8px 14px;color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.08em;cursor:pointer}.side-group summary::-webkit-details-marker{display:none}.side-group summary span{transition:transform .2s}.side-group[open] summary span{transform:rotate(180deg)}
 .task-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:0 16px 16px}.task-grid a{display:grid;gap:3px;padding:14px;border:1px solid var(--line);border-radius:10px;color:inherit;text-decoration:none;background:var(--surface-2)}.task-grid a:hover{border-color:var(--accent)}.task-grid b{font-size:24px}.task-grid small{color:var(--accent)}
@@ -389,3 +396,7 @@ a.kpi:hover { border-color: var(--accent); }
 @media(max-width:800px){.task-grid{grid-template-columns:1fr 1fr}.home-sec-title{display:block}.home-audience,.home-plans{grid-template-columns:1fr}.home-plan ul{min-height:0}}
 @media(max-width:650px){.pos-close-summary{margin:8px;align-items:stretch;flex-wrap:wrap}.pos-close-summary>div{flex-basis:100%}.pos-recent-list>div{grid-template-columns:minmax(0,1fr) auto}.pos-recent-list strong{grid-column:2}.pos-recent-list .btn{grid-row:2}}
 @media(max-width:480px){.task-grid{grid-template-columns:1fr}}
+/* v0.61：保留完整收銀功能，但目前僅提供銷售登記。 */
+.pos-record-mode .pos-bill-form,.pos-record-mode .pos-shift-strip,.pos-record-mode #p-cash-event,.pos-record-mode #p-reconcile,.pos-record-mode #p-opening{display:none!important}
+.pos-record-notice{margin:0;padding:12px 16px;color:#35556b;background:#edf6fc;font-size:13px;line-height:1.6}
+.pos-record-mode .pos-bill-items{flex:1;overflow:auto;min-height:100px}

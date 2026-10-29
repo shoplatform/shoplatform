@@ -1374,10 +1374,41 @@
     async channelReport(from,to){ensurePos();const os=S().orders.filter(o=>['paid','shipped','completed'].includes(o.status)&&ymdLocal(o.createdAt)>=from&&ymdLocal(o.createdAt)<=to),sum=a=>a.reduce((n,o)=>n+o.total,0),units=a=>a.reduce((n,o)=>n+o.items.reduce((q,i)=>q+i.qty,0),0),pack=(channel)=>{const a=os.filter(o=>(o.channel||'online')===channel);return {channel,revenue:sum(a),orders:a.length,units:units(a)};},po=os.filter(o=>(o.channel||'online')==='pos');return {total:{revenue:sum(os),orders:os.length,units:units(os)},channels:[pack('online'),pack('pos')],locations:S().locations.map(l=>{const a=po.filter(o=>o.locationId===l.id);return {id:l.id,name:l.name,revenue:sum(a),orders:a.length,units:units(a)};}),payments:Object.values(po.reduce((m,o)=>{const k=o.payment.methodId;m[k]=m[k]||{id:k,name:o.payment.methodName,revenue:0,orders:0};m[k].revenue+=o.total;m[k].orders++;return m;},{})),hourly:[]};}
   };
 
+  const invoiceState=()=>{const s=S();s.invoiceConfig=s.invoiceConfig||{mode:'test',enabled:false,autoIssue:false,taxId:'12345678',sellerName:'',hasKey:false};s.invoiceJobs=s.invoiceJobs||[];return s;};
+  function demoEnqueue(o,buyer){const s=invoiceState();if(!s.invoiceConfig.enabled||!buyer)return;const c=s.invoiceConfig;if(s.invoiceJobs.some(x=>x.orderId===o.id))return;s.invoiceJobs.unshift({id:uid('invoice'),orderId:o.id,orderNumber:o.number,channel:o.channel||'online',mode:'test',status:c.autoIssue?'pending':'draft',buyer,amount:o.total,attempts:0,createdAt:new Date().toISOString(),error:''});}
+  const invoices={
+    publicConfig:()=>({enabled:invoiceState().invoiceConfig.enabled}),
+    async config(){return clone(invoiceState().invoiceConfig);},
+    async save(settings){if(settings.mode==='live')throw new Error('離線示範不支援正式開票');invoiceState().invoiceConfig={...settings,mode:'test',taxId:'12345678',hasKey:true,verifiedAt:new Date().toISOString()};commit();return {ok:true,message:'示範設定已儲存，不會開立真實發票'};},
+    async test(){return {ok:true,message:'離線示範驗證成功；未連線光貿、未開立真實發票'};},
+    async list(offset=0,status=''){const rows=invoiceState().invoiceJobs.filter(x=>!status||x.status===status);return {total:rows.length,rows:clone(rows.slice(offset,offset+50))};},
+    async process(orderId){const s=invoiceState(),j=s.invoiceJobs.find(x=>x.orderId===orderId);if(!j)return {status:'unchanged'};if(j.status==='issued')return {status:'issued',number:j.invoiceNumber};j.status='issued';j.attempts++;j.invoiceNumber='DEMO-'+String(s.invoiceJobs.length).padStart(6,'0');j.error='僅為離線模擬，非正式電子發票';commit();return {status:'issued',number:j.invoiceNumber,message:'模擬開票成功'};},
+  };
+  const posSaleOriginal=pos.sale;
+  pos.recordSale=async input=>{
+    const o=await posSaleOriginal({...input,discount:0,payment:'other',customerId:null,note:'POS 簡易銷售紀錄（未記錄付款方式、未開立發票）'});
+    o.invoiceResult={status:'disabled'};return o;
+  };
+  pos.recent=async locationId=>orders.list().filter(o=>o.channel==='pos'&&o.locationId===locationId).slice(0,20);
+  pos.sale=async input=>{
+    const s=invoiceState(),previous=input.requestId&&s.orders.find(o=>o.checkoutKey===input.requestId);if(previous)return clone(previous);
+    if(s.invoiceConfig.enabled&&!input.invoice)throw new Error('請填寫發票資料');
+    const d=input.delivery||{};if(d.enabled&&(!d.name||!d.phone||String(d.address||'').length<5||d.fee<0||d.fee>100000))throw new Error('請填寫完整的收件資料與正確運費');
+    const o=await posSaleOriginal(input),stored=s.orders.find(x=>x.id===o.id);stored.checkoutKey=input.requestId;stored.invoiceBuyer=input.invoice;
+    if(d.enabled){stored.shipping={methodId:'home',methodName:'現場購買・需寄送',address:d.address,trackingNo:''};stored.shippingFee=Math.round(d.fee||0);stored.total+=stored.shippingFee;stored.contact={...stored.contact,name:d.name,phone:d.phone};stored.status='paid';Object.assign(o,clone(stored));}
+    demoEnqueue(stored,input.invoice);commit();
+    if(s.invoiceConfig.autoIssue)o.invoiceResult=await invoices.process(o.id);else o.invoiceResult={status:s.invoiceConfig.enabled?'draft':'disabled'};
+    return o;
+  };
+  const orderCreateOriginal=orders.create;
+  orders.create=async input=>{if(invoiceState().invoiceConfig.enabled&&!input.invoice)throw new Error('請填寫發票資料');const o=await orderCreateOriginal(input),stored=S().orders.find(x=>x.number===o.number);if(stored){stored.invoiceBuyer=input.invoice;commit();}return o;};
+  const orderStatusOriginal=orders.setStatus;
+  orders.setStatus=async(...args)=>{const r=await orderStatusOriginal(...args),o=S().orders.find(x=>x.id===args[0]);if(o?.status==='cancelled'){const j=invoiceState().invoiceJobs.find(x=>x.orderId===o.id);if(j){j.status='review';j.error='訂單已取消，請至光貿核對作廢／折讓';}commit();}else if(o&&o.payment.status==='paid'){demoEnqueue(o,o.invoiceBuyer);if(invoiceState().invoiceConfig.autoIssue)await invoices.process(o.id);commit();}return r;};
+  const refundOriginal=orders.refund;orders.refund=async(...args)=>{const r=await refundOriginal(...args),j=invoiceState().invoiceJobs.find(x=>x.orderId===args[0]);if(j){j.status='review';j.error='訂單有退款，請至光貿核對作廢／折讓';commit();}return r;};
   window.DB = {
     mode: "local", features, ready, admin, takeNotice: () => null, shopState: () => ({ closed: false, message: "" }),
     settings, categories, products, media, customers, auth, cart, orders, quote, stats, coupons, promotions, bundles, pages, tiers,
-    inventory, suppliers, purchases, reports, pos, reviews, favorites, returns, stockCounts, restocks, notifications,
+    inventory, suppliers, purchases, reports, pos, invoices, reviews, favorites, returns, stockCounts, restocks, notifications,
     onChange: fn => listeners.push(fn),
     reset() { state = window.makeSeed(); commit(); },
     exportJSON: () => JSON.stringify(state, null, 2),
