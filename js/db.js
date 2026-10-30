@@ -135,8 +135,16 @@
 
   async function loadShop() {
     const d = normalize(await rpc("shop_catalog", { p_slug: shopSlug() }));
+    // 發票是選配：舊版資料庫沒有此 RPC 時，不能擋住商品目錄。
+    // 只忽略「找不到此函式」，連線及權限錯誤仍照常顯示。
+    let invoicePublic;
+    try { invoicePublic = await rpc('shop_invoice_config',{p_slug:shopSlug()}); }
+    catch (err) {
+      if (!/Could not find the function\s+(?:public\.)?shop_invoice_config\b/i.test(String(err.message || ''))) throw err;
+      invoicePublic = {enabled:false};
+    }
+    cache.invoicePublic = invoicePublic || {enabled:false};
     cache.shop = Object.assign(empty(), d, { loadedAt: Date.now() });
-    cache.invoicePublic = await rpc('shop_invoice_config',{p_slug:shopSlug()});
   }
   // 前台會員：有登入就載入會員資料和訂單
   async function loadMember() {
